@@ -1,0 +1,14 @@
+id: provider_adapter_isolation
+intent: "Enable v1->v2->v3 provider switching without rewriting business logic."
+triggers:
+  - "Any STT/LLM invocation"
+requirements:
+  - "All provider calls must go through adapters (adapters/stt, adapters/llm)."
+  - "Business logic must consume only internal normalized models."
+  - "Adapters must implement timeouts and map provider errors to internal error types."
+forbidden:
+  - "Direct OpenAI SDK calls from routes/services outside adapters."
+  - "Provider-specific response parsing outside adapters."
+verification:
+  - "Unit tests mock provider responses."
+  - "Contract tests ensure adapters output normalized Transcript/MarkdownDraft models."

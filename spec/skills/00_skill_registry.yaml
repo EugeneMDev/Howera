@@ -1,0 +1,29 @@
+version: "1.0"
+project: "video2inst"
+date: "2026-02-21"
+owner: "Solution Architecture"
+principles:
+  - spec_is_law
+  - contract_first
+  - fsm_first
+  - async_idempotent
+  - provider_isolation
+  - proof_before_done
+  - minimal_diff
+skills:
+  - id: contract_first_api
+    file: "spec/skills/10_contract_first_api.yaml"
+  - id: fsm_enforcement
+    file: "spec/skills/20_fsm_enforcement.yaml"
+  - id: async_workflow_idempotency
+    file: "spec/skills/30_async_workflow_idempotency.yaml"
+  - id: provider_adapter_isolation
+    file: "spec/skills/40_provider_adapter_isolation.yaml"
+  - id: storage_artifact_manifest
+    file: "spec/skills/50_storage_artifact_manifest.yaml"
+  - id: testing_proof_policy
+    file: "spec/skills/60_testing_proof_policy.yaml"
+  - id: minimal_diff_discipline
+    file: "spec/skills/70_minimal_diff_discipline.yaml"
+  - id: security_baseline
+    file: "spec/skills/80_security_baseline.yaml"

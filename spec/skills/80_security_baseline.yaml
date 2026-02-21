@@ -1,0 +1,14 @@
+id: security_baseline
+intent: "Enforce safe defaults across SaaS and future on-prem."
+triggers:
+  - "Auth, storage URLs, callbacks, export download endpoints"
+requirements:
+  - "Signed URLs must be time-limited and scoped."
+  - "RBAC checks on all write endpoints."
+  - "Audit log events for: login, export, regenerate, role changes, workflow status updates."
+  - "Never log secrets, tokens, raw transcripts in error logs."
+forbidden:
+  - "Public unauthenticated access to artifacts."
+verification:
+  - "Tests for 401/403 behavior on protected endpoints."
+  - "Basic audit log write test (can be stubbed in v1)."

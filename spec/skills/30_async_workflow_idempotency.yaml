@@ -1,0 +1,15 @@
+id: async_workflow_idempotency
+intent: "Make workflow callbacks safe to retry and resilient to duplicates."
+triggers:
+  - "Any /internal/* callback endpoint"
+  - "Any n8n integration code"
+requirements:
+  - "Callbacks must include event_id (or equivalent idempotency key)."
+  - "If event_id already processed, the handler must be a no-op and return 200."
+  - "State updates must validate FSM transition before writing."
+  - "Artifacts updates must be atomic (single transaction or consistent sequence)."
+forbidden:
+  - "Non-idempotent side-effects (double write, double export) on duplicate callback."
+verification:
+  - "Test: same event_id sent twice -> only one state transition & one artifact update."
+  - "Test: callback with invalid transition -> 409/400 with error code."

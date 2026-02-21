@@ -1,0 +1,13 @@
+id: storage_artifact_manifest
+intent: "Keep all derived assets traceable and exportable."
+triggers:
+  - "Any code that writes to storage or references artifacts"
+requirements:
+  - "Every Job must have an artifact_manifest with URIs for video/audio/transcript/draft/exports."
+  - "Derived assets (screenshots, annotated images) must be linked via IDs and URIs."
+  - "Never overwrite immutable raw artifacts; create new versions instead."
+forbidden:
+  - "Storing anonymous files without metadata linkage."
+verification:
+  - "Tests: after pipeline steps, manifest contains expected fields."
+  - "Tests: screenshot extraction creates asset record + storage URI."

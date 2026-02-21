@@ -1,0 +1,587 @@
+openapi: 3.1.0
+info:
+  title: Howera API
+  version: 1.0.0
+  description: |
+    API contract for Howera service.
+    This document is the source of truth for backend implementation.
+
+servers:
+  - url: /api/v1
+
+security:
+  - bearerAuth: []
+
+tags:
+  - name: Projects
+  - name: Jobs
+  - name: Instructions
+  - name: Screenshots
+  - name: Exports
+  - name: Internal
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+    internalCallbackSecret:
+      type: apiKey
+      in: header
+      name: X-Callback-Secret
+
+  schemas:
+
+    Error:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          type: string
+        message:
+          type: string
+        details:
+          type: object
+
+    Project:
+      type: object
+      required: [id, name, created_at]
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+
+    JobStatus:
+      type: string
+      enum:
+        - CREATED
+        - UPLOADING
+        - UPLOADED
+        - AUDIO_EXTRACTING
+        - AUDIO_READY
+        - TRANSCRIBING
+        - TRANSCRIPT_READY
+        - GENERATING
+        - DRAFT_READY
+        - EDITING
+        - REGENERATING
+        - EXPORTING
+        - DONE
+        - FAILED
+        - CANCELLED
+
+    ArtifactManifest:
+      type: object
+      properties:
+        video_uri:
+          type: string
+        audio_uri:
+          type: string
+        transcript_uri:
+          type: string
+        draft_uri:
+          type: string
+        exports:
+          type: array
+          items:
+            type: string
+
+    Job:
+      type: object
+      required: [id, project_id, status, created_at]
+      properties:
+        id:
+          type: string
+        project_id:
+          type: string
+        status:
+          $ref: '#/components/schemas/JobStatus'
+        manifest:
+          $ref: '#/components/schemas/ArtifactManifest'
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    TranscriptSegment:
+      type: object
+      required: [start_ms, end_ms, text]
+      properties:
+        start_ms:
+          type: integer
+        end_ms:
+          type: integer
+        text:
+          type: string
+
+    Instruction:
+      type: object
+      required: [id, job_id, version, markdown]
+      properties:
+        id:
+          type: string
+        job_id:
+          type: string
+        version:
+          type: integer
+        markdown:
+          type: string
+        updated_at:
+          type: string
+          format: date-time
+
+    RegenerateRequest:
+      type: object
+      required: [selection_start, selection_end]
+      properties:
+        selection_start:
+          type: integer
+        selection_end:
+          type: integer
+        context:
+          type: string
+
+    RegenerateTask:
+      type: object
+      required: [id, status]
+      properties:
+        id:
+          type: string
+        status:
+          type: string
+          enum: [PENDING, RUNNING, SUCCEEDED, FAILED]
+        result_fragment:
+          type: string
+
+    ConfirmUploadRequest:
+      type: object
+      required: [video_uri]
+      properties:
+        video_uri:
+          type: string
+
+    StatusCallbackRequest:
+      type: object
+      required: [event_id, status, occurred_at]
+      properties:
+        event_id:
+          type: string
+        status:
+          $ref: '#/components/schemas/JobStatus'
+        occurred_at:
+          type: string
+          format: date-time
+        artifact_updates:
+          type: object
+        failure_code:
+          type: string
+        failure_message:
+          type: string
+        failed_stage:
+          type: string
+        correlation_id:
+          type: string
+
+    ScreenshotExtractionRequest:
+      type: object
+      required: [instruction_id, timestamp_ms]
+      properties:
+        instruction_id:
+          type: string
+        block_id:
+          type: string
+        char_offset:
+          type: integer
+        selection_hash:
+          type: string
+        timestamp_ms:
+          type: integer
+        offset_ms:
+          type: integer
+          default: 0
+        strategy:
+          type: string
+          enum: [nearest_keyframe, precise]
+          default: precise
+        format:
+          type: string
+          enum: [png, jpg]
+          default: png
+
+    ScreenshotAnchor:
+      type: object
+      required: [id, instruction_id, timestamp_ms, asset_id, image_uri, width, height, extracted_at_ms]
+      properties:
+        id:
+          type: string
+        instruction_id:
+          type: string
+        block_id:
+          type: string
+        char_offset:
+          type: integer
+        timestamp_ms:
+          type: integer
+        asset_id:
+          type: string
+        image_uri:
+          type: string
+        width:
+          type: integer
+        height:
+          type: integer
+        extracted_at_ms:
+          type: integer
+
+    Export:
+      type: object
+      required: [id, job_id, format, status]
+      properties:
+        id:
+          type: string
+        job_id:
+          type: string
+        format:
+          type: string
+          enum: [PDF, MD_ZIP]
+        status:
+          type: string
+          enum: [PENDING, RUNNING, DONE, FAILED]
+        download_url:
+          type: string
+
+paths:
+
+  /projects:
+    post:
+      tags: [Projects]
+      summary: Create project
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name:
+                  type: string
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Project'
+
+    get:
+      tags: [Projects]
+      summary: List projects
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Project'
+
+  /projects/{projectId}:
+    get:
+      tags: [Projects]
+      summary: Get project by id
+      parameters:
+        - in: path
+          name: projectId
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Project'
+
+  /projects/{projectId}/jobs:
+    post:
+      tags: [Jobs]
+      summary: Create job
+      parameters:
+        - in: path
+          name: projectId
+          required: true
+          schema:
+            type: string
+      responses:
+        "201":
+          description: Job created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Job'
+
+  /jobs/{jobId}:
+    get:
+      tags: [Jobs]
+      summary: Get job status
+      parameters:
+        - in: path
+          name: jobId
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Job'
+
+  /jobs/{jobId}/run:
+    post:
+      tags: [Jobs]
+      summary: Start workflow
+      parameters:
+        - in: path
+          name: jobId
+          required: true
+          schema:
+            type: string
+      responses:
+        "202":
+          description: Workflow started
+
+  /jobs/{jobId}/confirm-upload:
+    post:
+      tags: [Jobs]
+      summary: Confirm uploaded video and move job to UPLOADED
+      parameters:
+        - in: path
+          name: jobId
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ConfirmUploadRequest'
+      responses:
+        "200":
+          description: Upload confirmed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Job'
+
+  /jobs/{jobId}/transcript:
+    get:
+      tags: [Jobs]
+      summary: Get transcript
+      parameters:
+        - in: path
+          name: jobId
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Transcript
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/TranscriptSegment'
+
+  /instructions/{instructionId}:
+    get:
+      tags: [Instructions]
+      summary: Get instruction
+      parameters:
+        - in: path
+          name: instructionId
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Instruction
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Instruction'
+
+    put:
+      tags: [Instructions]
+      summary: Update instruction
+      parameters:
+        - in: path
+          name: instructionId
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [markdown]
+              properties:
+                markdown:
+                  type: string
+      responses:
+        "200":
+          description: Updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Instruction'
+
+  /instructions/{instructionId}/regenerate:
+    post:
+      tags: [Instructions]
+      summary: Regenerate selected text
+      parameters:
+        - in: path
+          name: instructionId
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegenerateRequest'
+      responses:
+        "202":
+          description: Regeneration task created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RegenerateTask'
+
+  /tasks/{taskId}:
+    get:
+      tags: [Instructions]
+      summary: Get task status
+      parameters:
+        - in: path
+          name: taskId
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Task status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RegenerateTask'
+
+  /jobs/{jobId}/screenshots/extract:
+    post:
+      tags: [Screenshots]
+      summary: Extract screenshot at timestamp
+      parameters:
+        - in: path
+          name: jobId
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ScreenshotExtractionRequest'
+      responses:
+        "201":
+          description: Screenshot created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ScreenshotAnchor'
+
+  /jobs/{jobId}/exports:
+    post:
+      tags: [Exports]
+      summary: Create export
+      parameters:
+        - in: path
+          name: jobId
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [format]
+              properties:
+                format:
+                  type: string
+                  enum: [PDF, MD_ZIP]
+      responses:
+        "202":
+          description: Export started
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Export'
+
+  /exports/{exportId}:
+    get:
+      tags: [Exports]
+      summary: Get export status
+      parameters:
+        - in: path
+          name: exportId
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Export
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Export'
+
+  /internal/jobs/{jobId}/status:
+    post:
+      tags: [Internal]
+      summary: Workflow callback
+      security:
+        - internalCallbackSecret: []
+      parameters:
+        - in: path
+          name: jobId
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StatusCallbackRequest'
+      responses:
+        "204":
+          description: Status updated

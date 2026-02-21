@@ -1,0 +1,16 @@
+id: fsm_enforcement
+intent: "Prevent invalid job lifecycle transitions and ensure resumability."
+triggers:
+  - "Any code that updates Job.status"
+inputs:
+  fsm: "spec/domain/job_fsm.md"
+requirements:
+  - "All status updates must call domain/job_fsm.ensure_transition(old,new)."
+  - "Terminal states (FAILED/CANCELLED/DONE) are immutable."
+  - "Checkpoint states must be preserved (AUDIO_READY, TRANSCRIPT_READY, DRAFT_READY) to support resume."
+forbidden:
+  - "Direct assignment: job.status = X without ensure_transition"
+  - "Skipping states without explicit allowed transitions"
+verification:
+  - "Unit tests cover valid and invalid transitions."
+  - "At least one test for resume behavior: failing at step N resumes from checkpoint."

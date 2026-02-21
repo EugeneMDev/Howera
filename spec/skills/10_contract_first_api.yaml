@@ -1,0 +1,17 @@
+id: contract_first_api
+intent: "Keep implementation strictly aligned with OpenAPI contract."
+triggers:
+  - "Any change under apps/api/app/routes/*"
+  - "Any change to request/response models"
+inputs:
+  openapi: "spec/api/openapi.yaml"
+requirements:
+  - "Every implemented endpoint must match path + method + status codes from OpenAPI."
+  - "Request/Response schemas must be represented as Pydantic models."
+  - "No new endpoints/fields without spec change in a separate task."
+forbidden:
+  - "Adding undocumented query params or response fields."
+  - "Changing response codes without OpenAPI update."
+verification:
+  - "Add/Update tests validating endpoint exists and returns expected schema keys."
+  - "Ensure FastAPI /openapi.json includes the required paths."

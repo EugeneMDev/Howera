@@ -1,0 +1,11 @@
+id: minimal_diff_discipline
+intent: "Keep changes reviewable and reduce agent drift."
+triggers:
+  - "Any code change"
+requirements:
+  - "Modify only files necessary for task scope."
+  - "No formatting sweeps or renaming unrelated modules."
+forbidden:
+  - "Mass refactor not required by task."
+verification:
+  - "PR summary lists changed files and explains why each was needed."

@@ -1,0 +1,12 @@
+id: testing_proof_policy
+intent: "Prevent regressions and ensure agent produces verifiable increments."
+triggers:
+  - "Any task completion"
+requirements:
+  - "Run make check before finishing the task."
+  - "If adding endpoints, add or update tests."
+  - "No skipped tests without justification."
+forbidden:
+  - "Marking work done without proof commands."
+verification:
+  - "CI equivalent: ruff + black --check + mypy + pytest"

@@ -304,6 +304,7 @@ sequenceDiagram
 ## Job States
 
 - CREATED
+- UPLOADING
 - UPLOADED
 - AUDIO_EXTRACTING
 - AUDIO_READY
@@ -312,9 +313,11 @@ sequenceDiagram
 - GENERATING
 - DRAFT\_READY
 - EDITING
+- REGENERATING
 - EXPORTING
 - DONE
 - FAILED
+- CANCELLED
 
 ---
 
@@ -407,14 +410,20 @@ erDiagram
 
 ## 9.2 API Contracts (High-Level)
 
-- `POST /jobs`
-- `POST /jobs/{id}/run`
-- `GET /jobs/{id}`
-- `GET /jobs/{id}/transcript`
-- `PUT /instructions/{id}`
-- `POST /instructions/{id}/regenerate`
-- `POST /screenshots/extract`
-- `POST /exports`
+- Authoritative path list: `spec/api/openapi.yaml`
+- `POST /projects`, `GET /projects`, `GET /projects/{projectId}`
+- `POST /projects/{projectId}/jobs`, `GET /jobs/{jobId}`, `POST /jobs/{jobId}/confirm-upload`
+- `POST /jobs/{jobId}/run`, `POST /jobs/{jobId}/cancel`, `POST /jobs/{jobId}/retry`
+- `GET /jobs/{jobId}/transcript`
+- `GET /instructions/{instructionId}`, `PUT /instructions/{instructionId}`
+- `POST /instructions/{instructionId}/regenerate`, `GET /tasks/{taskId}`
+- `POST /jobs/{jobId}/screenshots/extract`, `GET /screenshot-tasks/{taskId}`
+- `POST /instructions/{instructionId}/anchors`, `GET /instructions/{instructionId}/anchors`, `GET /anchors/{anchorId}`
+- `POST /anchors/{anchorId}/replace`, `DELETE /anchors/{anchorId}/assets/{assetId}`
+- `POST /jobs/{jobId}/screenshots/uploads`, `POST /jobs/{jobId}/screenshots/uploads/{uploadId}/confirm`, `POST /anchors/{anchorId}/attach-upload`
+- `POST /anchors/{anchorId}/annotations`
+- `POST /jobs/{jobId}/exports`, `GET /exports/{exportId}`
+- `POST /internal/jobs/{jobId}/status`
 
 ## 9.3 Authentication
 

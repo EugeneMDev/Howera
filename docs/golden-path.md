@@ -78,7 +78,7 @@ Request:
 - Provide video manifest update (as per API contract), e.g. `video_uri`
 
 Expected:
-- `200` or `204` (as defined)
+- `200`
 - `job.status == UPLOADED`
 
 ### Step 4 — Run Workflow

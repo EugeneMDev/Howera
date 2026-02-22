@@ -44,7 +44,7 @@ Required directories/files (minimum):
 - `apps/api` (FastAPI backend)
 - `spec/` (read-only contracts)
 - `.env.example`
-- `docs/env.md`
+- `env.md`
 
 ---
 
@@ -74,7 +74,7 @@ n8n:
 ffmpeg:
 - `FFMPEG_PATH`
 
-See details: `docs/env.md`.
+See details: `env.md`.
 
 Do not commit `.env`.
 

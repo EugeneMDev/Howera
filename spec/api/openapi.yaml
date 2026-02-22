@@ -1068,6 +1068,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Project'
+        "404":
+          description: Not found (no-existence-leak policy for unauthorized or missing project)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NoLeakNotFoundError'
 
   /projects/{projectId}/jobs:
     post:
@@ -1086,6 +1092,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Job'
+        "404":
+          description: Not found (no-existence-leak policy for unauthorized or missing project)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NoLeakNotFoundError'
 
   /jobs/{jobId}:
     get:
@@ -1104,6 +1116,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Job'
+        "404":
+          description: Not found (no-existence-leak policy for unauthorized or missing job)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NoLeakNotFoundError'
 
   /jobs/{jobId}/confirm-upload:
     post:
@@ -1565,6 +1583,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ScreenshotTask'
+        "404":
+          description: Not found (no-existence-leak policy for unauthorized or missing task)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NoLeakNotFoundError'
 
   /instructions/{instructionId}/anchors:
     post:
@@ -1589,6 +1613,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ScreenshotAnchor'
+        "404":
+          description: Not found (no-existence-leak policy for unauthorized or missing instruction)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NoLeakNotFoundError'
 
     get:
       tags: [Anchors]
@@ -1619,6 +1649,12 @@ paths:
                 type: array
                 items:
                   $ref: '#/components/schemas/ScreenshotAnchor'
+        "404":
+          description: Not found (no-existence-leak policy for unauthorized or missing instruction)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NoLeakNotFoundError'
 
   /anchors/{anchorId}:
     get:
@@ -1642,6 +1678,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ScreenshotAnchor'
+        "404":
+          description: Not found (no-existence-leak policy for unauthorized or missing anchor)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NoLeakNotFoundError'
 
   /anchors/{anchorId}/replace:
     post:
@@ -1740,6 +1782,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/CustomUploadTicket'
+        "404":
+          description: Not found (no-existence-leak policy for unauthorized or missing job)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NoLeakNotFoundError'
 
   /jobs/{jobId}/screenshots/uploads/{uploadId}/confirm:
     post:
@@ -1769,6 +1817,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ConfirmCustomUploadResponse'
+        "404":
+          description: Not found (no-existence-leak policy for unauthorized or missing job/upload)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NoLeakNotFoundError'
 
   /anchors/{anchorId}/attach-upload:
     post:
@@ -1793,6 +1847,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ScreenshotAnchor'
+        "404":
+          description: Not found (no-existence-leak policy for unauthorized or missing anchor/upload)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NoLeakNotFoundError'
 
   /anchors/{anchorId}/annotations:
     post:

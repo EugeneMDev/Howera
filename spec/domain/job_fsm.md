@@ -141,11 +141,14 @@ When re-running a job (manual retry or system retry), workflow SHOULD:
 - If transcript exists and verified → resume from `TRANSCRIPT_READY`
 - If draft exists and verified → resume from `DRAFT_READY` (usually skip generation, go to editing)
 
-### 5.3 Re-run entry points (recommended API behavior)
+### 5.3 Run/Retry entry points (recommended API behavior)
 - `POST /jobs/{jobId}/run` is allowed only when:
-  - status in `{UPLOADED, AUDIO_READY, TRANSCRIPT_READY, DRAFT_READY}`  
-  - and job not terminal.
-- Re-run MUST NOT delete existing artifacts; it may create new versions.
+  - status is `UPLOADED`
+  - and job is not terminal.
+- `POST /jobs/{jobId}/retry` is allowed only when:
+  - status is `FAILED`
+  - and retry metadata includes `resume_from_status` + checkpoint reference derived from available artifacts.
+- Re-run/retry MUST NOT delete existing artifacts; they may create new versions.
 
 ---
 

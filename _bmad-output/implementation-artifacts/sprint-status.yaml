@@ -1,0 +1,85 @@
+# generated: 2026-02-22
+# project: Howera
+# project_key: NOKEY
+# tracking_system: file-system
+# story_location: _bmad-output/implementation-artifacts
+
+# STATUS DEFINITIONS:
+# ==================
+# Epic Status:
+#   - backlog: Epic not yet started
+#   - in-progress: Epic actively being worked on
+#   - done: All stories in epic completed
+#
+# Epic Status Transitions:
+#   - backlog -> in-progress: Automatically when first story is created (via create-story)
+#   - in-progress -> done: Manually when all stories reach 'done' status
+#
+# Story Status:
+#   - backlog: Story only exists in epic file
+#   - ready-for-dev: Story file created in stories folder
+#   - in-progress: Developer actively working on implementation
+#   - review: Ready for code review (via Dev's code-review workflow)
+#   - done: Story completed
+#
+# Retrospective Status:
+#   - optional: Can be completed but not required
+#   - done: Retrospective has been completed
+#
+# WORKFLOW NOTES:
+# ===============
+# - Epic transitions to 'in-progress' automatically when first story is created
+# - Stories can be worked in parallel if team capacity allows
+# - SM typically creates next story after previous one is 'done' to incorporate learnings
+# - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
+
+generated: 2026-02-22
+project: Howera
+project_key: NOKEY
+tracking_system: file-system
+story_location: _bmad-output/implementation-artifacts
+
+development_status:
+  epic-1: in-progress
+  1-1-authenticate-api-requests-as-editor: ready-for-dev
+  1-2-create-and-read-owned-projects: backlog
+  1-3-create-jobs-in-owned-projects-and-read-owned-job-status: backlog
+  1-4-validate-internal-callback-secret: backlog
+  1-5-enforce-secure-logging-boundaries: backlog
+  epic-1-retrospective: optional
+  epic-2: backlog
+  2-1-confirm-job-upload-with-video-uri: backlog
+  2-2-start-workflow-run-for-an-upload-confirmed-job: backlog
+  epic-2-retrospective: optional
+  epic-3: backlog
+  3-1-enforce-fsm-transition-rules-and-lifecycle-invariants: backlog
+  3-2-validate-callback-contract-idempotency-and-ordering-policy: backlog
+  3-3-transactional-consistency-for-state-manifest-and-failure-metadata: backlog
+  3-4-emit-auditable-status-transition-events: backlog
+  3-5-cancel-running-job-via-fsm-governed-rules: backlog
+  3-6-retry-failed-job-from-checkpoint-with-policy-bound-model-profile: backlog
+  epic-3-retrospective: optional
+  epic-4: backlog
+  4-1-retrieve-transcript-segments-for-job: backlog
+  4-2-retrieve-instruction-content-by-id: backlog
+  4-3-update-instruction-markdown-with-versioning-and-concurrency-control: backlog
+  4-4-structural-validation-on-create-and-update-with-persisted-result: backlog
+  4-5-request-targeted-regeneration-with-idempotency-and-provenance: backlog
+  4-6-poll-regenerate-task-status-with-sanitized-outcomes: backlog
+  epic-4-retrospective: optional
+  epic-5: backlog
+  5-1-extract-screenshot-with-alignment-parameters-and-anchor-metadata: backlog
+  5-2-replace-existing-screenshot-asset-for-anchor-with-versioning: backlog
+  5-3-soft-delete-screenshot-asset-and-resolve-active-fallback: backlog
+  5-4-upload-custom-image-via-signed-url-and-confirm-attach: backlog
+  5-5-annotation-operations-schema-and-deterministic-rendering: backlog
+  5-6-anchor-addressing-persistence-policy-and-cross-version-traceability: backlog
+  epic-5-retrospective: optional
+  epic-6: backlog
+  6-1-create-export-request-bound-to-exact-instruction-version: backlog
+  6-2-persist-complete-export-provenance-and-snapshot-references: backlog
+  6-3-execute-export-fsm-and-freeze-provenance-on-success: backlog
+  6-4-retrieve-export-status-by-export-id: backlog
+  6-5-issue-strictly-scoped-signed-download-url: backlog
+  6-6-emit-canonical-export-audit-events: backlog
+  epic-6-retrospective: optional

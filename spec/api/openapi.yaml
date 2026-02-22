@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Howera API
-  version: 1.0.0
+  version: 1.1.0
   description: |
     API contract for Howera service.
     This document is the source of truth for backend implementation.
@@ -17,6 +17,7 @@ tags:
   - name: Jobs
   - name: Instructions
   - name: Screenshots
+  - name: Anchors
   - name: Exports
   - name: Internal
 
@@ -32,17 +33,202 @@ components:
       name: X-Callback-Secret
 
   schemas:
+    ErrorCode:
+      type: string
+      enum:
+        - FSM_TRANSITION_INVALID
+        - FSM_TERMINAL_IMMUTABLE
+        - VIDEO_URI_CONFLICT
+        - EVENT_ID_PAYLOAD_MISMATCH
+        - CALLBACK_OUT_OF_ORDER
+        - VERSION_CONFLICT
+        - RETRY_NOT_ALLOWED_STATE
+        - JOB_ALREADY_RUNNING
+        - ORCHESTRATOR_DISPATCH_FAILED
+        - TRANSCRIPT_NOT_READY
+        - VALIDATION_ERROR
+        - EXPORT_REQUEST_INVALID
+        - RESOURCE_NOT_FOUND
 
     Error:
       type: object
       required: [code, message]
       properties:
         code:
-          type: string
+          oneOf:
+            - $ref: '#/components/schemas/ErrorCode'
+            - type: string
         message:
           type: string
         details:
           type: object
+          additionalProperties: true
+
+    TransitionErrorDetails:
+      type: object
+      required: [current_status, attempted_status]
+      properties:
+        current_status:
+          $ref: '#/components/schemas/JobStatus'
+        attempted_status:
+          $ref: '#/components/schemas/JobStatus'
+        allowed_next_statuses:
+          type: array
+          items:
+            $ref: '#/components/schemas/JobStatus'
+
+    FsmTransitionError:
+      type: object
+      required: [code, message, details]
+      properties:
+        code:
+          type: string
+          enum: [FSM_TRANSITION_INVALID, FSM_TERMINAL_IMMUTABLE]
+        message:
+          type: string
+        details:
+          $ref: '#/components/schemas/TransitionErrorDetails'
+
+    VideoUriConflictError:
+      type: object
+      required: [code, message, details]
+      properties:
+        code:
+          type: string
+          enum: [VIDEO_URI_CONFLICT]
+        message:
+          type: string
+        details:
+          type: object
+          required: [current_video_uri, submitted_video_uri]
+          properties:
+            current_video_uri:
+              type: string
+            submitted_video_uri:
+              type: string
+
+    VersionConflictError:
+      type: object
+      required: [code, message, details]
+      properties:
+        code:
+          type: string
+          enum: [VERSION_CONFLICT]
+        message:
+          type: string
+        details:
+          type: object
+          required: [base_version, current_version]
+          properties:
+            base_version:
+              type: integer
+            current_version:
+              type: integer
+
+    RetryStateConflictError:
+      type: object
+      required: [code, message, details]
+      properties:
+        code:
+          type: string
+          enum: [RETRY_NOT_ALLOWED_STATE, JOB_ALREADY_RUNNING]
+        message:
+          type: string
+        details:
+          type: object
+          properties:
+            current_status:
+              $ref: '#/components/schemas/JobStatus'
+            attempted_status:
+              $ref: '#/components/schemas/JobStatus'
+
+    CallbackOrderingError:
+      type: object
+      required: [code, message, details]
+      properties:
+        code:
+          type: string
+          enum: [CALLBACK_OUT_OF_ORDER]
+        message:
+          type: string
+        details:
+          type: object
+          required: [latest_applied_occurred_at, current_status, attempted_status]
+          properties:
+            latest_applied_occurred_at:
+              type: string
+              format: date-time
+            current_status:
+              $ref: '#/components/schemas/JobStatus'
+            attempted_status:
+              $ref: '#/components/schemas/JobStatus'
+
+    EventIdPayloadMismatchError:
+      type: object
+      required: [code, message, details]
+      properties:
+        code:
+          type: string
+          enum: [EVENT_ID_PAYLOAD_MISMATCH]
+        message:
+          type: string
+        details:
+          type: object
+          required: [event_id]
+          properties:
+            event_id:
+              type: string
+
+    NoLeakNotFoundError:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          enum: [RESOURCE_NOT_FOUND]
+        message:
+          type: string
+
+    UpstreamDispatchError:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          enum: [ORCHESTRATOR_DISPATCH_FAILED]
+        message:
+          type: string
+        details:
+          type: object
+          additionalProperties: true
+
+    AuditEvent:
+      type: object
+      description: |
+        Audit payload must exclude secrets and raw transcript/prompt content.
+      required: [event_type, job_id, project_id, actor_type, occurred_at, recorded_at, correlation_id]
+      properties:
+        event_type:
+          type: string
+        job_id:
+          type: string
+        project_id:
+          type: string
+        actor_type:
+          type: string
+          enum: [editor, orchestrator, system]
+        prev_status:
+          $ref: '#/components/schemas/JobStatus'
+        new_status:
+          $ref: '#/components/schemas/JobStatus'
+        occurred_at:
+          type: string
+          format: date-time
+        recorded_at:
+          type: string
+          format: date-time
+        correlation_id:
+          type: string
 
     Project:
       type: object
@@ -121,12 +307,33 @@ components:
         text:
           type: string
 
+    ValidationStatus:
+      type: string
+      enum: [PASS, FAIL]
+
+    ValidationIssue:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          type: string
+        message:
+          type: string
+        path:
+          type: string
+          description: Markdown structure path (for example heading index or step index).
+
     Instruction:
       type: object
-      required: [id, job_id, version, markdown]
+      description: Validation metadata is produced on instruction create and update flows.
+      required: [instruction_id, job_id, version, markdown, updated_at, validation_status]
       properties:
+        instruction_id:
+          type: string
         id:
           type: string
+          deprecated: true
+          description: Deprecated alias of instruction_id.
         job_id:
           type: string
         version:
@@ -136,29 +343,126 @@ components:
         updated_at:
           type: string
           format: date-time
+        validation_status:
+          $ref: '#/components/schemas/ValidationStatus'
+        validation_errors:
+          type: array
+          description: Structural/schema diagnostics only; must not include transcript, prompt content, or secrets.
+          items:
+            $ref: '#/components/schemas/ValidationIssue'
+        validated_at:
+          type: string
+          format: date-time
+        validator_version:
+          type: string
+        model_profile_id:
+          type: string
+        prompt_template_id:
+          type: string
+        prompt_params_ref:
+          type: string
+
+    UpdateInstructionRequest:
+      type: object
+      required: [base_version, markdown]
+      properties:
+        base_version:
+          type: integer
+          minimum: 1
+        markdown:
+          type: string
+
+    RegenerateSelection:
+      oneOf:
+        - type: object
+          required: [block_id]
+          properties:
+            block_id:
+              type: string
+        - type: object
+          required: [char_range]
+          properties:
+            char_range:
+              $ref: '#/components/schemas/CharRange'
 
     RegenerateRequest:
       type: object
-      required: [selection_start, selection_end]
+      required: [base_version, selection, client_request_id]
       properties:
-        selection_start:
+        base_version:
           type: integer
-        selection_end:
-          type: integer
+          minimum: 1
+        selection:
+          $ref: '#/components/schemas/RegenerateSelection'
         context:
+          type: string
+        client_request_id:
+          type: string
+        model_profile:
+          type: string
+        prompt_template_id:
+          type: string
+        prompt_params_ref:
+          type: string
+
+    RegenerateProvenance:
+      type: object
+      required: [instruction_id, base_version, selection, requested_by, requested_at]
+      properties:
+        instruction_id:
+          type: string
+        base_version:
+          type: integer
+        selection:
+          $ref: '#/components/schemas/RegenerateSelection'
+        requested_by:
+          type: string
+        requested_at:
+          type: string
+          format: date-time
+        model_profile:
+          type: string
+        prompt_template_id:
+          type: string
+        prompt_params_ref:
           type: string
 
     RegenerateTask:
       type: object
-      required: [id, status]
+      required: [id, status, requested_at]
       properties:
         id:
           type: string
         status:
           type: string
           enum: [PENDING, RUNNING, SUCCEEDED, FAILED]
-        result_fragment:
+        progress_pct:
+          type: integer
+          minimum: 0
+          maximum: 100
+        instruction_id:
           type: string
+        instruction_version:
+          type: integer
+          description: Present when task status is SUCCEEDED.
+        failure_code:
+          type: string
+        failure_message:
+          type: string
+          description: Sanitized safe message only; must not include transcript, prompt content, or secrets.
+        failed_stage:
+          type: string
+        provenance:
+          $ref: '#/components/schemas/RegenerateProvenance'
+        replayed:
+          type: boolean
+          default: false
+        requested_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
 
     ConfirmUploadRequest:
       type: object
@@ -167,9 +471,64 @@ components:
         video_uri:
           type: string
 
+    ConfirmUploadResponse:
+      type: object
+      required: [job, replayed]
+      properties:
+        job:
+          $ref: '#/components/schemas/Job'
+        replayed:
+          type: boolean
+          description: True when the same video_uri was already confirmed for this job.
+
+    RunJobResponse:
+      type: object
+      required: [job_id, status, dispatch_id, replayed]
+      properties:
+        job_id:
+          type: string
+        status:
+          $ref: '#/components/schemas/JobStatus'
+        dispatch_id:
+          type: string
+        replayed:
+          type: boolean
+
+    RetryJobRequest:
+      type: object
+      required: [model_profile, client_request_id]
+      properties:
+        model_profile:
+          type: string
+        client_request_id:
+          type: string
+
+    RetryJobResponse:
+      type: object
+      required: [job_id, status, resume_from_status, checkpoint_ref, model_profile, dispatch_id, replayed]
+      properties:
+        job_id:
+          type: string
+        status:
+          $ref: '#/components/schemas/JobStatus'
+        resume_from_status:
+          $ref: '#/components/schemas/JobStatus'
+        checkpoint_ref:
+          type: string
+        model_profile:
+          type: string
+        dispatch_id:
+          type: string
+        replayed:
+          type: boolean
+
     StatusCallbackRequest:
       type: object
-      required: [event_id, status, occurred_at]
+      description: |
+        event_id is an idempotency key scoped to job_id. The system must enforce uniqueness
+        for (job_id, event_id), reject payload mismatch on replay, and reject out-of-order
+        occurred_at events that imply non-monotonic transitions.
+      required: [event_id, status, occurred_at, correlation_id]
       properties:
         event_id:
           type: string
@@ -178,8 +537,12 @@ components:
         occurred_at:
           type: string
           format: date-time
+        actor_type:
+          type: string
+          enum: [orchestrator, system]
         artifact_updates:
           type: object
+          additionalProperties: true
         failure_code:
           type: string
         failure_message:
@@ -189,17 +552,209 @@ components:
         correlation_id:
           type: string
 
+    StatusCallbackReplayResponse:
+      type: object
+      required: [job_id, event_id, replayed]
+      properties:
+        job_id:
+          type: string
+        event_id:
+          type: string
+        replayed:
+          type: boolean
+        current_status:
+          $ref: '#/components/schemas/JobStatus'
+        latest_applied_occurred_at:
+          type: string
+          format: date-time
+
+    TranscriptPage:
+      type: object
+      required: [items, limit]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/TranscriptSegment'
+        limit:
+          type: integer
+        next_cursor:
+          type: [string, "null"]
+
+    CharRange:
+      type: object
+      required: [start_offset, end_offset]
+      properties:
+        start_offset:
+          type: integer
+          minimum: 0
+        end_offset:
+          type: integer
+          minimum: 0
+
+    AnchorAddress:
+      type: object
+      required: [address_type]
+      properties:
+        address_type:
+          type: string
+          enum: [block_id, char_range]
+        block_id:
+          type: string
+        char_range:
+          $ref: '#/components/schemas/CharRange'
+        strategy:
+          type: string
+          description: Addressing strategy metadata for anchor persistence.
+
+    AnchorResolution:
+      type: object
+      required: [source_instruction_version_id, target_instruction_version_id, resolution_state]
+      properties:
+        source_instruction_version_id:
+          type: string
+        target_instruction_version_id:
+          type: string
+        resolution_state:
+          type: string
+          enum: [retain, remap, unresolved]
+        trace:
+          type: object
+          additionalProperties: true
+
+    ScreenshotAsset:
+      type: object
+      required: [id, anchor_id, version, kind, image_uri, mime_type, width, height, is_deleted, created_at]
+      properties:
+        id:
+          type: string
+        anchor_id:
+          type: string
+        version:
+          type: integer
+          minimum: 1
+        kind:
+          type: string
+          enum: [EXTRACTED, UPLOADED, ANNOTATED]
+        previous_asset_id:
+          type: [string, "null"]
+        image_uri:
+          type: string
+        mime_type:
+          type: string
+          enum: [image/png, image/jpeg, image/webp]
+        width:
+          type: integer
+        height:
+          type: integer
+        extraction_key:
+          type: string
+        checksum_sha256:
+          type: string
+        upload_id:
+          type: string
+        ops_hash:
+          type: string
+        rendered_from_asset_id:
+          type: string
+        is_deleted:
+          type: boolean
+        created_at:
+          type: string
+          format: date-time
+
+    ScreenshotAnchor:
+      type: object
+      required: [id, instruction_id, instruction_version_id, addressing, active_asset_id, created_at, updated_at]
+      properties:
+        id:
+          type: string
+        instruction_id:
+          type: string
+        instruction_version_id:
+          type: string
+        addressing:
+          $ref: '#/components/schemas/AnchorAddress'
+        active_asset_id:
+          type: [string, "null"]
+        assets:
+          type: array
+          items:
+            $ref: '#/components/schemas/ScreenshotAsset'
+        resolution:
+          $ref: '#/components/schemas/AnchorResolution'
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    ScreenshotTask:
+      type: object
+      required: [task_id, status, operation]
+      properties:
+        task_id:
+          type: string
+        operation:
+          type: string
+          enum: [extract, replace]
+        status:
+          type: string
+          enum: [PENDING, RUNNING, SUCCEEDED, FAILED]
+        anchor_id:
+          type: string
+        asset_id:
+          type: string
+        failure_code:
+          type: string
+        failure_message:
+          type: string
+
     ScreenshotExtractionRequest:
       type: object
-      required: [instruction_id, timestamp_ms]
+      required: [instruction_id, instruction_version_id, timestamp_ms]
       properties:
         instruction_id:
           type: string
+        instruction_version_id:
+          type: string
+        anchor_id:
+          type: string
         block_id:
           type: string
-        char_offset:
+        char_range:
+          $ref: '#/components/schemas/CharRange'
+        timestamp_ms:
           type: integer
-        selection_hash:
+        offset_ms:
+          type: integer
+          default: 0
+        strategy:
+          type: string
+          enum: [nearest_keyframe, precise]
+          default: precise
+        format:
+          type: string
+          enum: [png, jpg, webp]
+          default: png
+        idempotency_key:
+          type: string
+
+    ScreenshotAnchorCreateRequest:
+      type: object
+      required: [instruction_version_id, addressing]
+      properties:
+        instruction_version_id:
+          type: string
+        addressing:
+          $ref: '#/components/schemas/AnchorAddress'
+
+    ScreenshotReplaceRequest:
+      type: object
+      required: [instruction_version_id, timestamp_ms]
+      properties:
+        instruction_version_id:
           type: string
         timestamp_ms:
           type: integer
@@ -212,53 +767,255 @@ components:
           default: precise
         format:
           type: string
-          enum: [png, jpg]
+          enum: [png, jpg, webp]
           default: png
+        idempotency_key:
+          type: string
 
-    ScreenshotAnchor:
+    SoftDeleteScreenshotAssetResponse:
       type: object
-      required: [id, instruction_id, timestamp_ms, asset_id, image_uri, width, height, extracted_at_ms]
+      required: [anchor_id, deleted_asset_id, active_asset_id]
       properties:
-        id:
+        anchor_id:
           type: string
-        instruction_id:
+        deleted_asset_id:
           type: string
-        block_id:
+        active_asset_id:
+          type: [string, "null"]
+
+    CreateCustomUploadRequest:
+      type: object
+      required: [filename, mime_type, size_bytes, checksum_sha256]
+      properties:
+        filename:
           type: string
-        char_offset:
+        mime_type:
+          type: string
+          enum: [image/png, image/jpeg, image/webp]
+        size_bytes:
           type: integer
-        timestamp_ms:
-          type: integer
-        asset_id:
+          minimum: 1
+        checksum_sha256:
           type: string
-        image_uri:
+
+    CustomUploadTicket:
+      type: object
+      required: [upload_id, upload_url, expires_at, max_size_bytes, allowed_mime_types]
+      properties:
+        upload_id:
+          type: string
+        upload_url:
+          type: string
+        expires_at:
+          type: string
+          format: date-time
+        max_size_bytes:
+          type: integer
+        allowed_mime_types:
+          type: array
+          items:
+            type: string
+            enum: [image/png, image/jpeg, image/webp]
+
+    ConfirmCustomUploadRequest:
+      type: object
+      required: [mime_type, size_bytes, checksum_sha256, width, height]
+      properties:
+        mime_type:
+          type: string
+          enum: [image/png, image/jpeg, image/webp]
+        size_bytes:
+          type: integer
+          minimum: 1
+        checksum_sha256:
           type: string
         width:
           type: integer
+          minimum: 1
         height:
           type: integer
-        extracted_at_ms:
-          type: integer
+          minimum: 1
+
+    ConfirmCustomUploadResponse:
+      type: object
+      required: [asset]
+      properties:
+        asset:
+          $ref: '#/components/schemas/ScreenshotAsset'
+
+    AttachUploadedAssetRequest:
+      type: object
+      required: [upload_id, instruction_version_id]
+      properties:
+        upload_id:
+          type: string
+        instruction_version_id:
+          type: string
+        idempotency_key:
+          type: string
+
+    AnnotationOperation:
+      type: object
+      required: [op_type, geometry, style]
+      properties:
+        op_type:
+          type: string
+          enum: [blur, arrow, marker, pencil]
+        geometry:
+          type: object
+          additionalProperties: true
+        style:
+          type: object
+          additionalProperties: true
+
+    AnnotateScreenshotRequest:
+      type: object
+      required: [base_asset_id, operations]
+      properties:
+        base_asset_id:
+          type: string
+        operations:
+          type: array
+          minItems: 1
+          items:
+            $ref: '#/components/schemas/AnnotationOperation'
+        idempotency_key:
+          type: string
+
+    AnnotateScreenshotResponse:
+      type: object
+      required: [anchor_id, base_asset_id, ops_hash, rendered_asset_id, active_asset_id]
+      properties:
+        anchor_id:
+          type: string
+        base_asset_id:
+          type: string
+        ops_hash:
+          type: string
+        rendered_asset_id:
+          type: string
+        active_asset_id:
+          type: string
+
+    ExportFormat:
+      type: string
+      enum: [PDF, MD_ZIP]
+
+    ExportStatus:
+      type: string
+      enum: [REQUESTED, RUNNING, SUCCEEDED, FAILED]
+
+    ExportAuditEventType:
+      type: string
+      enum: [EXPORT_REQUESTED, EXPORT_STARTED, EXPORT_SUCCEEDED, EXPORT_FAILED]
+
+    ExportAuditEvent:
+      type: object
+      required: [event_type, export_id, identity_key, occurred_at, recorded_at, correlation_id]
+      properties:
+        event_type:
+          $ref: '#/components/schemas/ExportAuditEventType'
+        export_id:
+          type: string
+        identity_key:
+          type: string
+        occurred_at:
+          type: string
+          format: date-time
+        recorded_at:
+          type: string
+          format: date-time
+        correlation_id:
+          type: string
+
+    CreateExportRequest:
+      type: object
+      required: [format, instruction_version_id]
+      properties:
+        format:
+          $ref: '#/components/schemas/ExportFormat'
+        instruction_version_id:
+          type: string
+        idempotency_key:
+          type: string
+          description: Optional caller key; server idempotency identity is instruction_version_id + format + screenshot_set_hash.
+
+    ExportAnchorBinding:
+      type: object
+      required: [anchor_id, active_asset_id]
+      properties:
+        anchor_id:
+          type: string
+        active_asset_id:
+          type: string
+        rendered_asset_id:
+          type: [string, "null"]
+
+    ExportProvenance:
+      type: object
+      required: [instruction_version_id, screenshot_set_hash, anchors, instruction_snapshot_id, model_profile_id, prompt_template_id]
+      properties:
+        instruction_version_id:
+          type: string
+        screenshot_set_hash:
+          type: string
+        anchors:
+          type: array
+          items:
+            $ref: '#/components/schemas/ExportAnchorBinding'
+        instruction_snapshot_id:
+          type: string
+        model_profile_id:
+          type: string
+        prompt_template_id:
+          type: string
+        prompt_params_ref:
+          type: string
+        generated_at:
+          type: string
+          format: date-time
 
     Export:
       type: object
-      required: [id, job_id, format, status]
+      required: [id, job_id, format, status, instruction_version_id, identity_key, screenshot_set_hash, created_at, updated_at]
       properties:
         id:
           type: string
         job_id:
           type: string
         format:
-          type: string
-          enum: [PDF, MD_ZIP]
+          $ref: '#/components/schemas/ExportFormat'
         status:
+          $ref: '#/components/schemas/ExportStatus'
+        instruction_version_id:
           type: string
-          enum: [PENDING, RUNNING, DONE, FAILED]
+        identity_key:
+          type: string
+          description: Deterministic key computed from instruction_version_id + format + screenshot_set_hash.
+        screenshot_set_hash:
+          type: string
+        provenance:
+          $ref: '#/components/schemas/ExportProvenance'
+        provenance_frozen_at:
+          type: string
+          format: date-time
+          description: Set when status becomes SUCCEEDED; provenance must be immutable afterwards.
+        last_audit_event:
+          $ref: '#/components/schemas/ExportAuditEventType'
         download_url:
           type: string
+        download_url_expires_at:
+          type: string
+          format: date-time
+          description: Signed URL expiry timestamp (policy-controlled, e.g. 15 minutes).
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
 
 paths:
-
   /projects:
     post:
       tags: [Projects]
@@ -348,24 +1105,13 @@ paths:
               schema:
                 $ref: '#/components/schemas/Job'
 
-  /jobs/{jobId}/run:
-    post:
-      tags: [Jobs]
-      summary: Start workflow
-      parameters:
-        - in: path
-          name: jobId
-          required: true
-          schema:
-            type: string
-      responses:
-        "202":
-          description: Workflow started
-
   /jobs/{jobId}/confirm-upload:
     post:
       tags: [Jobs]
       summary: Confirm uploaded video and move job to UPLOADED
+      description: |
+        Idempotent for the same video_uri on the same job. A conflicting video_uri for the
+        same job is rejected with 409 and no mutation.
       parameters:
         - in: path
           name: jobId
@@ -380,16 +1126,35 @@ paths:
               $ref: '#/components/schemas/ConfirmUploadRequest'
       responses:
         "200":
-          description: Upload confirmed
+          description: Upload confirmed or idempotent replay for the same video_uri
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Job'
+                $ref: '#/components/schemas/ConfirmUploadResponse'
+        "404":
+          description: Not found (no-existence-leak policy for unauthorized or missing job)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NoLeakNotFoundError'
+        "409":
+          description: Conflict (invalid FSM transition or conflicting video_uri)
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/FsmTransitionError'
+                  - $ref: '#/components/schemas/VideoUriConflictError'
 
-  /jobs/{jobId}/transcript:
-    get:
+  /jobs/{jobId}/run:
+    post:
       tags: [Jobs]
-      summary: Get transcript
+      summary: Start workflow
+      description: |
+        The run endpoint is idempotent per job. Repeated run calls return the existing
+        dispatch reference and do not create duplicate orchestrator executions.
+        Dispatch payload to orchestrator includes job_id, project_id, video_uri, callback_url.
+        Secrets and raw transcript content must not be logged in dispatch or failure paths.
       parameters:
         - in: path
           name: jobId
@@ -398,24 +1163,208 @@ paths:
             type: string
       responses:
         "200":
-          description: Transcript
+          description: Idempotent replay of an existing dispatch
           content:
             application/json:
               schema:
-                type: array
-                items:
-                  $ref: '#/components/schemas/TranscriptSegment'
+                $ref: '#/components/schemas/RunJobResponse'
+        "202":
+          description: Workflow started and dispatched once
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RunJobResponse'
+        "404":
+          description: Not found (no-existence-leak policy for unauthorized or missing job)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NoLeakNotFoundError'
+        "409":
+          description: Invalid FSM transition (job must be UPLOADED)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FsmTransitionError'
+        "502":
+          description: Upstream orchestrator dispatch failed and state was not advanced
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UpstreamDispatchError'
+
+  /jobs/{jobId}/cancel:
+    post:
+      tags: [Jobs]
+      summary: Cancel running job when allowed by FSM
+      description: |
+        Cancellation is allowed only for FSM-cancellable states. The attempted target status
+        is CANCELLED and conflict payload must include current and attempted statuses.
+      parameters:
+        - in: path
+          name: jobId
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Job cancelled
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Job'
+        "404":
+          description: Not found (no-existence-leak policy for unauthorized or missing job)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NoLeakNotFoundError'
+        "409":
+          description: Invalid FSM transition for cancellation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FsmTransitionError'
+
+  /jobs/{jobId}/retry:
+    post:
+      tags: [Jobs]
+      summary: Retry failed job from latest valid checkpoint
+      description: |
+        Retry is allowed only from FAILED and is idempotent by client_request_id.
+        The server persists resume_from_status, checkpoint_ref, and model_profile.
+        Dispatch payload includes job_id, project_id, video_uri, callback_url,
+        resume_from_status, checkpoint_ref, and model_profile.
+      parameters:
+        - in: path
+          name: jobId
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RetryJobRequest'
+      responses:
+        "200":
+          description: Idempotent replay; returns existing retry dispatch
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RetryJobResponse'
+        "202":
+          description: Retry accepted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RetryJobResponse'
+        "404":
+          description: Not found (no-existence-leak policy for unauthorized or missing job)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NoLeakNotFoundError'
+        "409":
+          description: Retry not allowed from current state or job already running
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RetryStateConflictError'
+              examples:
+                retry_not_allowed_state:
+                  value:
+                    code: RETRY_NOT_ALLOWED_STATE
+                    message: Retry is allowed only from FAILED.
+                    details:
+                      current_status: DRAFT_READY
+                      attempted_status: REGENERATING
+                job_already_running:
+                  value:
+                    code: JOB_ALREADY_RUNNING
+                    message: Job already has an active dispatch.
+                    details:
+                      current_status: GENERATING
+        "502":
+          description: Upstream orchestrator dispatch failed and state was not advanced
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UpstreamDispatchError'
+
+  /jobs/{jobId}/transcript:
+    get:
+      tags: [Jobs]
+      summary: Get transcript
+      description: |
+        Allowed states: TRANSCRIPT_READY, GENERATING, DRAFT_READY, EDITING, EXPORTING,
+        DONE, FAILED. Uses no-existence-leak policy (404 for unauthorized or missing).
+      parameters:
+        - in: path
+          name: jobId
+          required: true
+          schema:
+            type: string
+        - in: query
+          name: limit
+          required: false
+          schema:
+            type: integer
+            default: 200
+            maximum: 500
+            minimum: 1
+        - in: query
+          name: cursor
+          required: false
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Transcript page ordered by start_ms
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TranscriptPage'
+        "404":
+          description: Not found (no-existence-leak policy for unauthorized or missing job)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NoLeakNotFoundError'
+        "409":
+          description: Transcript not yet available for current job state
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                transcript_not_ready:
+                  value:
+                    code: TRANSCRIPT_NOT_READY
+                    message: Transcript is not available for this job state.
+                    details:
+                      current_status: AUDIO_EXTRACTING
 
   /instructions/{instructionId}:
     get:
       tags: [Instructions]
       summary: Get instruction
+      description: |
+        Returns latest version when `version` query parameter is omitted.
+        Returns exact version when `version` is provided.
       parameters:
         - in: path
           name: instructionId
           required: true
           schema:
             type: string
+        - in: query
+          name: version
+          required: false
+          schema:
+            type: integer
+            minimum: 1
       responses:
         "200":
           description: Instruction
@@ -423,10 +1372,19 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Instruction'
+        "404":
+          description: Not found (no-existence-leak policy for unauthorized or missing instruction)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NoLeakNotFoundError'
 
     put:
       tags: [Instructions]
       summary: Update instruction
+      description: |
+        Uses optimistic concurrency control. base_version must match current persisted
+        version, otherwise returns VERSION_CONFLICT and no mutation.
       parameters:
         - in: path
           name: instructionId
@@ -438,11 +1396,7 @@ paths:
         content:
           application/json:
             schema:
-              type: object
-              required: [markdown]
-              properties:
-                markdown:
-                  type: string
+              $ref: '#/components/schemas/UpdateInstructionRequest'
       responses:
         "200":
           description: Updated
@@ -450,11 +1404,28 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Instruction'
+        "404":
+          description: Not found (no-existence-leak policy for unauthorized or missing instruction)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NoLeakNotFoundError'
+        "409":
+          description: Base version is stale; no mutation persisted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VersionConflictError'
 
   /instructions/{instructionId}/regenerate:
     post:
       tags: [Instructions]
       summary: Regenerate selected text
+      description: |
+        Selection must address either block_id or char_range. Endpoint is idempotent by
+        client_request_id and returns existing task reference on duplicate requests.
+        Provenance is persisted for instruction_id, base_version, selection, requester, and
+        model/prompt reference IDs when provided.
       parameters:
         - in: path
           name: instructionId
@@ -468,17 +1439,49 @@ paths:
             schema:
               $ref: '#/components/schemas/RegenerateRequest'
       responses:
+        "200":
+          description: Idempotent replay; existing regenerate task returned
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RegenerateTask'
         "202":
           description: Regeneration task created
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/RegenerateTask'
+        "400":
+          description: Invalid selection or payload
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                invalid_selection:
+                  value:
+                    code: VALIDATION_ERROR
+                    message: Selection must include block_id or char_range.
+        "404":
+          description: Not found (no-existence-leak policy for unauthorized or missing instruction)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NoLeakNotFoundError'
+        "409":
+          description: Base version conflict; no mutation persisted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VersionConflictError'
 
   /tasks/{taskId}:
     get:
       tags: [Instructions]
-      summary: Get task status
+      summary: Get regenerate task status
+      description: |
+        SUCCEEDED responses include reference to new instruction version.
+        FAILED responses include only sanitized failure fields.
       parameters:
         - in: path
           name: taskId
@@ -492,11 +1495,21 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/RegenerateTask'
+        "404":
+          description: Not found (no-existence-leak policy for unauthorized or missing task)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NoLeakNotFoundError'
 
   /jobs/{jobId}/screenshots/extract:
     post:
       tags: [Screenshots]
-      summary: Extract screenshot at timestamp
+      summary: Extract screenshot at timestamp (async)
+      description: |
+        Preferred async contract for FFmpeg latency. Request is idempotent by idempotency_key
+        and by canonical extraction key (job_id + instruction_version_id + timestamp_ms +
+        offset_ms + strategy + format).
       parameters:
         - in: path
           name: jobId
@@ -510,17 +1523,204 @@ paths:
             schema:
               $ref: '#/components/schemas/ScreenshotExtractionRequest'
       responses:
+        "200":
+          description: Idempotent replay; existing extraction task returned
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ScreenshotTask'
+        "202":
+          description: Screenshot extraction task created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ScreenshotTask'
+        "400":
+          description: Invalid extraction payload
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        "404":
+          description: Not found (no-existence-leak policy for unauthorized or missing job/instruction)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NoLeakNotFoundError'
+
+  /screenshot-tasks/{taskId}:
+    get:
+      tags: [Screenshots]
+      summary: Get screenshot task status
+      parameters:
+        - in: path
+          name: taskId
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Screenshot task status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ScreenshotTask'
+
+  /instructions/{instructionId}/anchors:
+    post:
+      tags: [Anchors]
+      summary: Create screenshot anchor for instruction version
+      parameters:
+        - in: path
+          name: instructionId
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ScreenshotAnchorCreateRequest'
+      responses:
         "201":
-          description: Screenshot created
+          description: Anchor created
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ScreenshotAnchor'
 
-  /jobs/{jobId}/exports:
+    get:
+      tags: [Anchors]
+      summary: List screenshot anchors for instruction
+      parameters:
+        - in: path
+          name: instructionId
+          required: true
+          schema:
+            type: string
+        - in: query
+          name: instruction_version_id
+          required: false
+          schema:
+            type: string
+        - in: query
+          name: include_deleted_assets
+          required: false
+          schema:
+            type: boolean
+            default: false
+      responses:
+        "200":
+          description: Anchor list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ScreenshotAnchor'
+
+  /anchors/{anchorId}:
+    get:
+      tags: [Anchors]
+      summary: Get screenshot anchor
+      parameters:
+        - in: path
+          name: anchorId
+          required: true
+          schema:
+            type: string
+        - in: query
+          name: target_instruction_version_id
+          required: false
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Anchor details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ScreenshotAnchor'
+
+  /anchors/{anchorId}/replace:
     post:
-      tags: [Exports]
-      summary: Create export
+      tags: [Screenshots]
+      summary: Replace active anchor asset with new extraction (async)
+      description: |
+        Idempotent by idempotency_key/canonical extraction key. On success, active_asset_id
+        is moved to a new version linked by previous_asset_id.
+      parameters:
+        - in: path
+          name: anchorId
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ScreenshotReplaceRequest'
+      responses:
+        "200":
+          description: Idempotent replay; existing replacement task returned
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ScreenshotTask'
+        "202":
+          description: Replacement task created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ScreenshotTask'
+        "400":
+          description: Invalid replacement payload
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        "404":
+          description: Not found (no-existence-leak policy for unauthorized or missing anchor)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NoLeakNotFoundError'
+
+  /anchors/{anchorId}/assets/{assetId}:
+    delete:
+      tags: [Screenshots]
+      summary: Soft-delete screenshot asset and update active fallback
+      parameters:
+        - in: path
+          name: anchorId
+          required: true
+          schema:
+            type: string
+        - in: path
+          name: assetId
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Asset soft-deleted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SoftDeleteScreenshotAssetResponse'
+        "404":
+          description: Not found (no-existence-leak policy for unauthorized or missing anchor/asset)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NoLeakNotFoundError'
+
+  /jobs/{jobId}/screenshots/uploads:
+    post:
+      tags: [Screenshots]
+      summary: Create signed upload URL for custom screenshot asset
       parameters:
         - in: path
           name: jobId
@@ -532,24 +1732,169 @@ paths:
         content:
           application/json:
             schema:
-              type: object
-              required: [format]
-              properties:
-                format:
-                  type: string
-                  enum: [PDF, MD_ZIP]
+              $ref: '#/components/schemas/CreateCustomUploadRequest'
       responses:
-        "202":
-          description: Export started
+        "201":
+          description: Upload URL created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CustomUploadTicket'
+
+  /jobs/{jobId}/screenshots/uploads/{uploadId}/confirm:
+    post:
+      tags: [Screenshots]
+      summary: Confirm uploaded custom screenshot asset
+      parameters:
+        - in: path
+          name: jobId
+          required: true
+          schema:
+            type: string
+        - in: path
+          name: uploadId
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ConfirmCustomUploadRequest'
+      responses:
+        "200":
+          description: Upload confirmed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConfirmCustomUploadResponse'
+
+  /anchors/{anchorId}/attach-upload:
+    post:
+      tags: [Anchors]
+      summary: Attach confirmed uploaded asset to anchor
+      parameters:
+        - in: path
+          name: anchorId
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AttachUploadedAssetRequest'
+      responses:
+        "200":
+          description: Uploaded asset attached
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ScreenshotAnchor'
+
+  /anchors/{anchorId}/annotations:
+    post:
+      tags: [Screenshots]
+      summary: Apply annotation operation log and render deterministic artifact
+      description: |
+        Operations must follow op schema. Deterministic ops_hash maps to rendered_asset_id.
+        Repeated identical requests are idempotent. On render failure, prior state is unchanged.
+      parameters:
+        - in: path
+          name: anchorId
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AnnotateScreenshotRequest'
+      responses:
+        "200":
+          description: Annotation applied
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AnnotateScreenshotResponse'
+        "400":
+          description: Invalid annotation operations
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        "404":
+          description: Not found (no-existence-leak policy for unauthorized or missing anchor/asset)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NoLeakNotFoundError'
+
+  /jobs/{jobId}/exports:
+    post:
+      tags: [Exports]
+      summary: Create export bound to instruction version
+      description: |
+        Export identity key is deterministic: instruction_version_id + format + screenshot_set_hash.
+        Requests are idempotent on this identity key. Export uses stored instruction snapshot
+        and immutable model/prompt references by ID only.
+        Audit event types are EXPORT_REQUESTED, EXPORT_STARTED, EXPORT_SUCCEEDED, EXPORT_FAILED.
+        Duplicate idempotent replays must not emit duplicate business audit events.
+      parameters:
+        - in: path
+          name: jobId
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateExportRequest'
+      responses:
+        "200":
+          description: Idempotent replay; existing export returned
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/Export'
+        "202":
+          description: Export requested
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Export'
+        "400":
+          description: Invalid export request (version/format/inputs)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                invalid_export_request:
+                  value:
+                    code: EXPORT_REQUEST_INVALID
+                    message: Unsupported format or invalid instruction version.
+        "404":
+          description: Not found (no-existence-leak policy for unauthorized or missing job)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NoLeakNotFoundError'
 
   /exports/{exportId}:
     get:
       tags: [Exports]
       summary: Get export status
+      description: |
+        Returns export FSM state and deterministic identity/provenance summary.
+        Signed download URL is present only when status is SUCCEEDED and is time-limited.
+        Provenance is frozen and immutable once status reaches SUCCEEDED.
+        Signed URLs must be strictly scoped to the export artifact and credentials must not be logged.
       parameters:
         - in: path
           name: exportId
@@ -563,11 +1908,28 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Export'
+        "404":
+          description: Not found (no-existence-leak policy for unauthorized or missing export)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NoLeakNotFoundError'
 
   /internal/jobs/{jobId}/status:
     post:
       tags: [Internal]
       summary: Workflow callback
+      description: |
+        Callback processing is idempotent on (job_id, event_id).
+        - First accepted event applies once.
+        - Replayed identical payload returns 200 with replayed=true and no mutation.
+        - Replayed event_id with different payload returns 409 EVENT_ID_PAYLOAD_MISMATCH.
+        - Out-of-order occurred_at that implies non-monotonic transition returns
+          409 CALLBACK_OUT_OF_ORDER with latest_applied_occurred_at/current/attempted status.
+        State change + manifest merge + failure metadata must be committed transactionally.
+        Manifest updates are keyed merge-safe and must not replace/delete immutable raw artifact entries.
+        Transition audit records must include event_type, job_id, project_id, actor_type,
+        prev_status, new_status, occurred_at, recorded_at, correlation_id.
       security:
         - internalCallbackSecret: []
       parameters:
@@ -583,5 +1945,37 @@ paths:
             schema:
               $ref: '#/components/schemas/StatusCallbackRequest'
       responses:
+        "200":
+          description: Replay no-op accepted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StatusCallbackReplayResponse'
         "204":
           description: Status updated
+        "401":
+          description: Invalid callback authentication
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        "404":
+          description: Not found (no-existence-leak policy for unauthorized or missing job)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NoLeakNotFoundError'
+        "409":
+          description: Callback replay/order/transition conflict
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/FsmTransitionError'
+                  - $ref: '#/components/schemas/CallbackOrderingError'
+                  - $ref: '#/components/schemas/EventIdPayloadMismatchError'
+              examples:
+                event_id_payload_mismatch:
+                  value:
+                    code: EVENT_ID_PAYLOAD_MISMATCH
+                    message: event_id replay payload differs from first accepted payload.

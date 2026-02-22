@@ -33,13 +33,12 @@ FSM goals:
 - `EDITING` — User is editing instruction in UI.
 - `REGENERATING` — Regenerating selected fragment (async task model).
 - `EXPORTING` — Generating export artifacts (PDF/MD bundle).
-- `DONE` — Export complete (at least one export done) OR job explicitly marked completed.
+- `DONE` — Export complete (at least one export succeeded and is retrievable).
 
 ### 2.2 Terminal states
 - `FAILED` — Terminal failure (non-recoverable automatically).
 - `CANCELLED` — Cancelled by user/admin.
-
-> Note: `DONE` is considered terminal for pipeline execution but UI may still allow further edits + new exports (as new export runs). If you need strict immutability, introduce `ARCHIVED` later.
+- `DONE` — Terminal completion state.
 
 ---
 
@@ -59,7 +58,8 @@ Every state-changing callback from workflow must include:
 - `occurred_at` timestamp
 
 **Idempotency rule:**
-- If `event_id` was already processed for `job_id`, the API MUST return success (`204`) and perform **no additional side effects**.
+- First accepted callback returns `204`.
+- If the same `event_id` is replayed with identical payload for `job_id`, the API MUST return `200` with replay metadata and perform **no additional side effects**.
 
 Recommended header:
 - `X-Event-Id: <event_id>`  
@@ -112,8 +112,6 @@ Legend:
 | EXPORTING   | DONE          | WF/API  | Export artifacts ready |
 | EXPORTING   | EDITING       | API     | Export failed but job remains editable (preferred) |
 | EDITING     | CANCELLED     | API     | Optional policy: allow cancel only if no exports running |
-| DONE        | EXPORTING     | API/UI  | Allowed if new export requested (re-export) |
-| DONE        | EDITING       | API/UI  | Allowed if user continues editing (creates new instruction version) |
 
 ### 4.4 Global transitions (always allowed)
 | From (any non-terminal) | To        | Trigger | Notes |
@@ -126,6 +124,7 @@ Legend:
 - `UPLOADING → AUDIO_EXTRACTING` (video not confirmed)
 - `FAILED → *` (terminal) unless you implement explicit `RETRY_FROM_FAILED` action (not in v1)
 - `CANCELLED → *` (terminal)
+- `DONE → *` (terminal)
 
 ---
 
@@ -219,7 +218,7 @@ When re-running a job (manual retry or system retry), workflow SHOULD:
 Minimum test suite MUST include:
 1. **Allowed transitions**: all rows in transition table that are ✅
 2. **Forbidden transitions**: representative invalid moves (at least 1 per stage)
-3. **Terminal behavior**: no transition out of `FAILED` and `CANCELLED`
+3. **Terminal behavior**: no transition out of `FAILED`, `CANCELLED`, and `DONE`
 4. **Idempotency**: same `event_id` applied twice does not duplicate effects
 5. **Resume**: from `AUDIO_READY` skips extraction; from `TRANSCRIPT_READY` skips STT
 

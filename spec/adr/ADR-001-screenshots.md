@@ -9,7 +9,7 @@
 
 ## 1. Context
 
-Video2Inst generates step-by-step instructions from video. Authors must be able to insert screenshots at specific timestamps, adjust frame selection, annotate images (blur/arrow/marker/pencil), and export the final guide as PDF/MD bundle.
+Howera generates step-by-step instructions from video. Authors must be able to insert screenshots at specific timestamps, adjust frame selection, annotate images (blur/arrow/marker/pencil), and export the final guide as PDF/MD bundle.
 
 Key requirements:
 - Videos may be large (1-10GB+) and in various codecs (H.264/H.265).

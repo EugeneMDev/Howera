@@ -19,8 +19,13 @@ Prove that a user can:
 4) Start workflow
 5) Receive transcript + draft
 6) Edit instruction
-7) Extract screenshot
+7) Extract screenshot (async) and poll task
 8) Export MD bundle and PDF
+
+Status semantics used in this scenario:
+- `DRAFT_READY` means LLM draft generation is complete and draft artifact is stored.
+- `DONE` means at least one export is completed successfully and retrievable.
+- Export status FSM is `REQUESTED -> RUNNING -> SUCCEEDED|FAILED`.
 
 ---
 
@@ -82,7 +87,7 @@ Request:
 
 Expected:
 - `202`
-- `job.status` becomes `AUDIO_EXTRACTING` or `PROCESSING` (depending on your model)
+- `job.status` becomes `AUDIO_EXTRACTING`
 - Orchestrator is triggered
 
 ### Step 5 — Workflow Callback(s)
@@ -99,7 +104,7 @@ Sequence:
 
 Expected:
 - each callback returns `204`
-- duplicate event_id returns `204` without changes (idempotency)
+- duplicate event_id returns `200` with replay marker and no changes (idempotency)
 
 ### Step 6 — Load Draft Instruction
 Request:
@@ -125,8 +130,17 @@ Body:
 - `offset_ms` optional
 
 Expected:
-- `201`
-- returns `asset_id` + `image_uri`
+- `202`
+- returns screenshot `task_id`
+
+### Step 8b — Poll Screenshot Task
+Request:
+- `GET /screenshot-tasks/{taskId}`
+
+Expected:
+- `200`
+- task status eventually `SUCCEEDED`
+- resulting anchor/asset identifiers are available from task outcome or linked anchor lookup
 
 ### Step 9 — Export MD bundle
 Request:
@@ -134,7 +148,8 @@ Request:
 
 Expected:
 - `202`
-- export status eventually `DONE`
+- export status eventually `SUCCEEDED`
+- `job.status` eventually becomes `DONE` after first successful export completion
 - download_url available
 
 ### Step 10 — Export PDF
@@ -142,7 +157,8 @@ Request:
 - `POST /jobs/{jobId}/exports` with `format=PDF`
 
 Expected:
-- `202` then `DONE`
+- `202` then export `SUCCEEDED`
+- `job.status` remains `DONE`
 
 ---
 
@@ -157,6 +173,8 @@ Expected:
   - manifest URIs updated as pipeline progresses
 - Export:
   - export artifacts stored and downloadable
+  - export status transitions to `SUCCEEDED` before download URL is available
+  - `DONE` job status is reached only after at least one export is `SUCCEEDED`
 
 ---
 

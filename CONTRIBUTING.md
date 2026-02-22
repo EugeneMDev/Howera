@@ -1,4 +1,4 @@
-# Contributing Guide — Video2Inst
+# Contributing Guide — Howera
 
 This repository is developed using **Spec-Driven Development** and **agentic workflows** (Codex).
 The goal is deterministic, testable increments.
@@ -130,9 +130,3 @@ Any internal callback must be authenticated (secret + idempotency header).
 Example:
 
 `feat: enforce job FSM transitions`
-
-
----
-
-Якщо ок — наступним кроком можу зробити **`AGENTS.md`** (операційні правила конкретно для Codex app) у ще більш “machine-friendly” стилі, щоб агент читав і безпомилково дотримувався процесу.
-::contentReference[oaicite:0]{index=0}

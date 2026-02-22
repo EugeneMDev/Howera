@@ -1,5 +1,5 @@
 # AGENTS.md
-Project: Video2Inst
+Project: Howera
 Architecture: FastAPI + Firebase (v1) + n8n + OpenAI
 Agent Model: GPT-5.3-Codex
 

@@ -67,6 +67,7 @@ class AuthApiTests(_SettingsEnvCase):
         self.assertIn("/api/v1/projects", paths)
         self.assertIn("/api/v1/projects/{projectId}", paths)
         self.assertIn("/api/v1/projects/{projectId}/jobs", paths)
+        self.assertIn("/api/v1/jobs/{jobId}", paths)
         self.assertIn("/api/v1/internal/jobs/{jobId}/status", paths)
 
         self.assertEqual(set(paths["/api/v1/projects"]["post"]["responses"].keys()), {"201", "401"})
@@ -74,7 +75,12 @@ class AuthApiTests(_SettingsEnvCase):
         self.assertEqual(set(paths["/api/v1/projects/{projectId}"]["get"]["responses"].keys()), {"200", "404"})
         self.assertEqual(
             set(paths["/api/v1/projects/{projectId}/jobs"]["post"]["responses"].keys()),
-            {"201", "401", "404"},
+            {"201", "404"},
+        )
+        self.assertEqual(set(paths["/api/v1/jobs/{jobId}"]["get"]["responses"].keys()), {"200", "404"})
+        self.assertEqual(
+            paths["/api/v1/jobs/{jobId}"]["get"]["responses"]["404"]["content"]["application/json"]["schema"]["$ref"],
+            "#/components/schemas/NoLeakNotFoundError",
         )
         self.assertEqual(
             set(paths["/api/v1/internal/jobs/{jobId}/status"]["post"]["responses"].keys()),

@@ -75,3 +75,9 @@ class InMemoryStore:
         self.jobs[job.id] = job
         self.job_write_count += 1
         return job
+
+    def get_job_for_owner(self, owner_id: str, job_id: str) -> JobRecord | None:
+        job = self.jobs.get(job_id)
+        if job is None or job.owner_id != owner_id:
+            return None
+        return job

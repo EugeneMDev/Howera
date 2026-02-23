@@ -43,7 +43,7 @@ development_status:
   epic-1: in-progress
   1-1-authenticate-api-requests-as-editor: done
   1-2-create-and-read-owned-projects: done
-  1-3-create-jobs-in-owned-projects-and-read-owned-job-status: ready-for-dev
+  1-3-create-jobs-in-owned-projects-and-read-owned-job-status: done
   1-4-validate-internal-callback-secret: backlog
   1-5-enforce-secure-logging-boundaries: backlog
   epic-1-retrospective: optional

@@ -1,6 +1,6 @@
 # Story 1.2: Create and Read Owned Projects
 
-Status: ready-for-dev
+Status: done
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 
@@ -17,20 +17,26 @@ so that my workspace is isolated from other users.
 
 ## Tasks / Subtasks
 
-- [ ] Implement project ownership persistence and repository boundaries (AC: 1, 2)
-- [ ] Ensure project records store `owner_id` from authenticated principal at creation time.
-- [ ] Implement owner-scoped repository methods for list/get operations and no direct storage logic in routes.
-- [ ] Implement project read endpoints with ownership enforcement (AC: 2)
-- [ ] Add `GET /projects` to return only projects owned by current principal.
-- [ ] Add `GET /projects/{projectId}` with ownership check and no-existence-leak `404` behavior.
-- [ ] Keep route handlers thin and delegate ownership checks to service/repository layer.
-- [ ] Align create-project behavior with ownership requirements (AC: 1)
-- [ ] Ensure `POST /projects` persists owner association and returns only contract fields (`id`, `name`, `created_at`).
-- [ ] Ensure cross-owner access cannot leak existence details through status/body differences.
-- [ ] Add tests for ownership boundaries and no-leak semantics (AC: 1, 2)
-- [ ] Add API tests for create + list + get under two different users.
-- [ ] Add API tests that unauthorized/nonexistent project reads both return the same `404 RESOURCE_NOT_FOUND` shape.
-- [ ] Add unit tests for project service/repository owner-scoping logic.
+- [x] Implement project ownership persistence and repository boundaries (AC: 1, 2)
+- [x] Ensure project records store `owner_id` from authenticated principal at creation time.
+- [x] Implement owner-scoped repository methods for list/get operations and no direct storage logic in routes.
+- [x] Implement project read endpoints with ownership enforcement (AC: 2)
+- [x] Add `GET /projects` to return only projects owned by current principal.
+- [x] Add `GET /projects/{projectId}` with ownership check and no-existence-leak `404` behavior.
+- [x] Keep route handlers thin and delegate ownership checks to service/repository layer.
+- [x] Align create-project behavior with ownership requirements (AC: 1)
+- [x] Ensure `POST /projects` persists owner association and returns only contract fields (`id`, `name`, `created_at`).
+- [x] Ensure cross-owner access cannot leak existence details through status/body differences.
+- [x] Add tests for ownership boundaries and no-leak semantics (AC: 1, 2)
+- [x] Add API tests for create + list + get under two different users.
+- [x] Add API tests that unauthorized/nonexistent project reads both return the same `404 RESOURCE_NOT_FOUND` shape.
+- [x] Add unit tests for project service/repository owner-scoping logic.
+
+### Review Follow-ups (AI)
+
+- [x] [AI-Review][HIGH] Align `GET /projects/{projectId}` `404` response schema to OpenAPI `NoLeakNotFoundError` instead of generic `ErrorResponse` so the runtime contract matches `spec/api/openapi.yaml`. [apps/api/app/routes/projects.py:45]
+- [x] [AI-Review][MEDIUM] Remove undocumented `401` response codes from runtime OpenAPI for `GET /projects` and `GET /projects/{projectId}` (or update spec in a separate task) to maintain strict contract-first parity. [apps/api/app/main.py:18]
+- [x] [AI-Review][MEDIUM] Add OpenAPI contract assertions for response schema refs (not only status code sets), including `GET /projects/{projectId}` `404` -> `NoLeakNotFoundError`, to prevent silent schema drift. [apps/api/tests/test_auth_middleware.py:74]
 
 ## Dev Notes
 
@@ -123,9 +129,60 @@ GPT-5.3-Codex
 
 ### Completion Notes List
 
-- Ultimate context engine analysis completed - comprehensive developer guide created.
-- No architecture artifact was available in planning artifacts; story guardrails were derived from OpenAPI, PRD, epics, project context, and Story 1.1 implementation learnings.
+- Implemented owner-scoped project access in repository and service layers (`list_projects_for_owner`, `get_project_for_owner`, `ProjectService.list_projects`, `ProjectService.get_project`) while keeping route handlers thin.
+- Added `GET /api/v1/projects` and `GET /api/v1/projects/{projectId}` with bearer-auth principal scoping and no-leak `404 RESOURCE_NOT_FOUND` behavior for cross-owner and nonexistent project access.
+- Kept create-project ownership behavior aligned by persisting `owner_id` from authenticated principal and returning only contract fields (`id`, `name`, `created_at`).
+- Added ownership API tests and unit tests covering: create/list/get under separate users, identical no-leak `404` shape for unauthorized vs missing resources, and owner-scoping logic at service/repository level.
+- Updated OpenAPI response-code filtering assertions for implemented project read endpoints and verified `/openapi.json` includes expected paths.
+- Verification completed in `apps/api`: `make lint`, `make test`, and `make check` all passed on 2026-02-23.
+- Resolved all code-review findings: introduced a dedicated `NoLeakNotFoundError` schema model, aligned `GET /projects/{projectId}` `404` response docs to that schema, removed undocumented read-endpoint `401` response codes from filtered OpenAPI, and added schema-ref assertions in OpenAPI tests.
 
 ### File List
 
+- `apps/api/app/main.py`
+- `apps/api/app/repositories/memory.py`
+- `apps/api/app/routes/projects.py`
+- `apps/api/app/schemas/error.py`
+- `apps/api/app/services/projects.py`
+- `apps/api/tests/test_auth_middleware.py`
+- `apps/api/tests/test_projects_ownership.py`
 - `_bmad-output/implementation-artifacts/1-2-create-and-read-owned-projects.md`
+- `_bmad-output/implementation-artifacts/sprint-status.yaml`
+
+### Change Log
+
+- 2026-02-23: Completed Story 1.2 implementation for owned-project creation/read boundaries, no-leak `404` enforcement, and ownership test coverage; story moved to `review`.
+- 2026-02-23: Senior code review completed with Changes Requested; added review follow-up items and moved story to `in-progress`.
+- 2026-02-23: Applied all HIGH/MEDIUM review fixes, re-validated test/lint/check gates, and moved story to `done`.
+
+## Senior Developer Review (AI)
+
+### Reviewer
+
+- `Codex` (AI Senior Developer Reviewer)
+- Date: 2026-02-23
+
+### Outcome
+
+- Approved
+
+### Summary
+
+- Ownership enforcement and no-leak runtime behavior are implemented and tested, but the documented API contract is not fully aligned with `spec/api/openapi.yaml`.
+- The main risk is schema/status drift in generated OpenAPI for newly added read endpoints, which violates the repository's contract-first rules.
+
+### Severity Breakdown
+
+- High: 1
+- Medium: 2
+- Low: 0
+
+### Action Items
+
+- [x] [HIGH] Use the contract `NoLeakNotFoundError` schema for `GET /projects/{projectId}` `404` response documentation instead of generic `ErrorResponse`. [apps/api/app/routes/projects.py:45]
+- [x] [MEDIUM] Keep runtime `/openapi.json` status codes for project read endpoints strictly aligned to `spec/api/openapi.yaml` (remove `401` from filtered response maps unless spec changes separately). [apps/api/app/main.py:18]
+- [x] [MEDIUM] Strengthen OpenAPI tests to assert response schema refs for project read endpoints, especially `404` no-leak shape schema. [apps/api/tests/test_auth_middleware.py:74]
+
+### Follow-up Resolution
+
+- 2026-02-23: All HIGH/MEDIUM action items resolved and re-validated with `make check`; story approved.

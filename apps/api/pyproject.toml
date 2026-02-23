@@ -1,0 +1,15 @@
+[project]
+name = "howera-api"
+version = "0.1.0"
+description = "Howera FastAPI backend"
+requires-python = ">=3.12"
+dependencies = [
+  "firebase-admin>=6.7.0",
+  "fastapi>=0.116.0",
+  "pydantic>=2.8.0",
+  "pydantic-settings>=2.3.0",
+]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"

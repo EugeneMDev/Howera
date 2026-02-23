@@ -51,6 +51,17 @@ class InMemoryStore:
     def get_project(self, project_id: str) -> ProjectRecord | None:
         return self.projects.get(project_id)
 
+    def list_projects_for_owner(self, owner_id: str) -> list[ProjectRecord]:
+        projects = [record for record in self.projects.values() if record.owner_id == owner_id]
+        projects.sort(key=lambda record: record.created_at)
+        return projects
+
+    def get_project_for_owner(self, owner_id: str, project_id: str) -> ProjectRecord | None:
+        project = self.projects.get(project_id)
+        if project is None or project.owner_id != owner_id:
+            return None
+        return project
+
     def create_job(self, owner_id: str, project_id: str) -> JobRecord:
         now = datetime.now(UTC)
         job = JobRecord(

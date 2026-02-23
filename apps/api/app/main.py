@@ -15,7 +15,8 @@ from app.schemas.error import ErrorResponse
 
 
 _OPENAPI_RESPONSE_CODES: dict[str, dict[str, set[str]]] = {
-    "/api/v1/projects": {"post": {"201", "401"}},
+    "/api/v1/projects": {"post": {"201", "401"}, "get": {"200"}},
+    "/api/v1/projects/{projectId}": {"get": {"200", "404"}},
     "/api/v1/projects/{projectId}/jobs": {"post": {"201", "401", "404"}},
     "/api/v1/internal/jobs/{jobId}/status": {"post": {"200", "204", "401", "404", "409"}},
 }

@@ -25,8 +25,17 @@ _OPENAPI_RESPONSE_CODES: dict[str, dict[str, set[str]]] = {
 _AUTH_VALIDATION_PATHS: set[tuple[str, str]] = {
     ("POST", "/api/v1/projects"),
     ("POST", "/api/v1/projects/{projectId}/jobs"),
+}
+
+_CALLBACK_VALIDATION_PATHS: set[tuple[str, str]] = {
     ("POST", "/api/v1/internal/jobs/{jobId}/status"),
 }
+
+_INTERNAL_CALLBACK_409_ONEOF_REFS: list[str] = [
+    "#/components/schemas/FsmTransitionError",
+    "#/components/schemas/CallbackOrderingError",
+    "#/components/schemas/EventIdPayloadMismatchError",
+]
 
 
 def _apply_contract_response_codes(schema: dict) -> None:
@@ -50,6 +59,22 @@ def _apply_contract_response_codes(schema: dict) -> None:
                 responses.setdefault(status_code, {"description": "See API contract"})
 
 
+def _apply_internal_callback_conflict_schema(schema: dict) -> None:
+    """Force callback 409 response schema to match contract oneOf references."""
+    path_item = schema.get("paths", {}).get("/api/v1/internal/jobs/{jobId}/status")
+    if not path_item:
+        return
+
+    operation = path_item.get("post")
+    if not operation:
+        return
+
+    responses = operation.setdefault("responses", {})
+    conflict = responses.setdefault("409", {"description": "See API contract"})
+    content = conflict.setdefault("content", {}).setdefault("application/json", {})
+    content["schema"] = {"oneOf": [{"$ref": ref} for ref in _INTERNAL_CALLBACK_409_ONEOF_REFS]}
+
+
 def create_app() -> FastAPI:
     app = FastAPI(title="Howera API", version="1.1.0")
     app.state.store = InMemoryStore()
@@ -58,7 +83,7 @@ def create_app() -> FastAPI:
     async def handle_api_error(_, exc: ApiError) -> JSONResponse:
         return JSONResponse(
             status_code=exc.status_code,
-            content=exc.payload.model_dump(exclude_none=True),
+            content=exc.payload.model_dump(mode="json", exclude_none=True),
         )
 
     @app.exception_handler(RequestValidationError)
@@ -70,6 +95,9 @@ def create_app() -> FastAPI:
         if route_key in _AUTH_VALIDATION_PATHS:
             payload = ErrorResponse(code="UNAUTHORIZED", message="Invalid request payload")
             return JSONResponse(status_code=401, content=payload.model_dump())
+        if route_key in _CALLBACK_VALIDATION_PATHS:
+            payload = ErrorResponse(code="VALIDATION_ERROR", message="Invalid callback payload")
+            return JSONResponse(status_code=409, content=payload.model_dump())
 
         return await request_validation_exception_handler(request, exc)
 
@@ -88,6 +116,7 @@ def create_app() -> FastAPI:
             routes=app.routes,
         )
         _apply_contract_response_codes(schema)
+        _apply_internal_callback_conflict_schema(schema)
         app.openapi_schema = schema
         return app.openapi_schema
 

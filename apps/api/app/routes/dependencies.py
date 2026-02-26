@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from secrets import compare_digest
 from typing import Annotated
 
 from fastapi import Depends, Request, Security
@@ -18,6 +19,7 @@ from app.errors import ApiError
 from app.repositories.memory import InMemoryStore
 from app.schemas.auth import AuthPrincipal
 from app.services.jobs import JobService
+from app.services.internal_callbacks import InternalCallbackService
 from app.services.projects import ProjectService
 
 bearer_scheme = HTTPBearer(auto_error=False, scheme_name="bearerAuth")
@@ -65,7 +67,7 @@ async def require_callback_secret(
     settings: Annotated[Settings, Depends(get_settings)],
 ) -> None:
     """Validate callback secret for internal endpoints."""
-    if callback_secret != settings.callback_secret:
+    if callback_secret is None or not compare_digest(callback_secret, settings.callback_secret):
         raise _auth_error("Invalid callback authentication")
 
 
@@ -79,3 +81,9 @@ def get_project_service(store: Annotated[InMemoryStore, Depends(get_store)]) -> 
 
 def get_job_service(store: Annotated[InMemoryStore, Depends(get_store)]) -> JobService:
     return JobService(store)
+
+
+def get_internal_callback_service(
+    store: Annotated[InMemoryStore, Depends(get_store)],
+) -> InternalCallbackService:
+    return InternalCallbackService(store)

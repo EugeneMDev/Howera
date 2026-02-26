@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from typing import Any
+from typing import Literal
 from uuid import uuid4
 
 from app.schemas.job import JobStatus
@@ -28,11 +30,27 @@ class JobRecord:
 
 
 @dataclass(slots=True)
+class CallbackEventRecord:
+    job_id: str
+    event_id: str
+    status: JobStatus
+    occurred_at: datetime
+    actor_type: Literal["orchestrator", "system"] | None
+    artifact_updates: dict[str, Any] | None
+    failure_code: str | None
+    failure_message: str | None
+    failed_stage: str | None
+    correlation_id: str
+
+
+@dataclass(slots=True)
 class InMemoryStore:
     """Simple, deterministic persistence layer for scaffolding and tests."""
 
     projects: dict[str, ProjectRecord] = field(default_factory=dict)
     jobs: dict[str, JobRecord] = field(default_factory=dict)
+    callback_events: dict[tuple[str, str], CallbackEventRecord] = field(default_factory=dict)
+    latest_callback_at_by_job: dict[str, datetime] = field(default_factory=dict)
     project_write_count: int = 0
     job_write_count: int = 0
 
@@ -81,3 +99,6 @@ class InMemoryStore:
         if job is None or job.owner_id != owner_id:
             return None
         return job
+
+    def get_job_for_internal_callback(self, job_id: str) -> JobRecord | None:
+        return self.jobs.get(job_id)

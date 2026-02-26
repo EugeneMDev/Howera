@@ -87,8 +87,40 @@ class AuthApiTests(_SettingsEnvCase):
             {"200", "204", "401", "404", "409"},
         )
         self.assertEqual(
+            paths["/api/v1/internal/jobs/{jobId}/status"]["post"]["responses"]["409"]["content"]["application/json"]["schema"]["oneOf"],
+            [
+                {"$ref": "#/components/schemas/FsmTransitionError"},
+                {"$ref": "#/components/schemas/CallbackOrderingError"},
+                {"$ref": "#/components/schemas/EventIdPayloadMismatchError"},
+            ],
+        )
+        self.assertEqual(
+            paths["/api/v1/internal/jobs/{jobId}/status"]["post"]["responses"]["404"]["content"]["application/json"]["schema"]["$ref"],
+            "#/components/schemas/NoLeakNotFoundError",
+        )
+        self.assertEqual(
             paths["/api/v1/projects/{projectId}"]["get"]["responses"]["404"]["content"]["application/json"]["schema"]["$ref"],
             "#/components/schemas/NoLeakNotFoundError",
+        )
+        callback_post = paths["/api/v1/internal/jobs/{jobId}/status"]["post"]
+        request_schema_ref = callback_post["requestBody"]["content"]["application/json"]["schema"]["$ref"]
+        self.assertEqual(request_schema_ref, "#/components/schemas/StatusCallbackRequest")
+        callback_schema = response.json()["components"]["schemas"]["StatusCallbackRequest"]
+        self.assertIn("actor_type", callback_schema["properties"])
+        self.assertIn("artifact_updates", callback_schema["properties"])
+        self.assertIn("failure_code", callback_schema["properties"])
+        self.assertIn("failure_message", callback_schema["properties"])
+        self.assertIn("failed_stage", callback_schema["properties"])
+        conflict_schema = callback_post["responses"]["409"]["content"]["application/json"]["schema"]
+        conflict_variants = conflict_schema.get("oneOf") or conflict_schema.get("anyOf") or []
+        conflict_refs = {item["$ref"] for item in conflict_variants}
+        self.assertEqual(
+            conflict_refs,
+            {
+                "#/components/schemas/FsmTransitionError",
+                "#/components/schemas/CallbackOrderingError",
+                "#/components/schemas/EventIdPayloadMismatchError",
+            },
         )
 
     def test_missing_authorization_header_returns_401_and_no_project_side_effect(self) -> None:
@@ -171,37 +203,230 @@ class AuthApiTests(_SettingsEnvCase):
     def test_internal_callback_uses_callback_secret_not_bearer(self) -> None:
         app = create_app()
         client = TestClient(app)
+        store = app.state.store
+        project = store.create_project(owner_id="owner-1", name="Project")
+        job = store.create_job(owner_id="owner-1", project_id=project.id)
 
         body = {
             "event_id": "evt-1",
-            "status": "CREATED",
+            "status": "UPLOADING",
             "occurred_at": "2026-02-22T00:00:00Z",
             "correlation_id": "corr-1",
         }
 
-        unauthorized = client.post("/api/v1/internal/jobs/job-1/status", json=body)
+        unauthorized = client.post(f"/api/v1/internal/jobs/{job.id}/status", json=body)
         self.assertEqual(unauthorized.status_code, 401)
         self.assertEqual(unauthorized.json()["code"], "UNAUTHORIZED")
 
         authorized = client.post(
-            "/api/v1/internal/jobs/job-1/status",
+            f"/api/v1/internal/jobs/{job.id}/status",
             headers={"X-Callback-Secret": "test-callback-secret"},
             json=body,
         )
         self.assertEqual(authorized.status_code, 204)
+        self.assertEqual(store.jobs[job.id].status.value, "UPLOADING")
 
-    def test_invalid_callback_payload_returns_401(self) -> None:
+    def test_invalid_callback_secret_causes_no_mutation_side_effects(self) -> None:
         app = create_app()
         client = TestClient(app)
+        store = app.state.store
+        project = store.create_project(owner_id="owner-1", name="Project")
+        job = store.create_job(owner_id="owner-1", project_id=project.id)
+        before_status = store.jobs[job.id].status
+        before_job_writes = store.job_write_count
+
+        body = {
+            "event_id": "evt-2",
+            "status": "CREATED",
+            "occurred_at": "2026-02-22T00:00:00Z",
+            "correlation_id": "corr-2",
+        }
 
         response = client.post(
-            "/api/v1/internal/jobs/job-1/status",
-            headers={"X-Callback-Secret": "test-callback-secret"},
-            json={"event_id": "evt-1"},
+            f"/api/v1/internal/jobs/{job.id}/status",
+            headers={"X-Callback-Secret": "wrong-secret"},
+            json=body,
         )
 
         self.assertEqual(response.status_code, 401)
         self.assertEqual(response.json()["code"], "UNAUTHORIZED")
+        self.assertEqual(store.jobs[job.id].status, before_status)
+        self.assertEqual(store.job_write_count, before_job_writes)
+
+    def test_invalid_callback_payload_returns_409_validation_error(self) -> None:
+        app = create_app()
+        client = TestClient(app)
+        store = app.state.store
+        project = store.create_project(owner_id="owner-1", name="Project")
+        job = store.create_job(owner_id="owner-1", project_id=project.id)
+
+        response = client.post(
+            f"/api/v1/internal/jobs/{job.id}/status",
+            headers={"X-Callback-Secret": "test-callback-secret"},
+            json={"event_id": "evt-1"},
+        )
+
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.json()["code"], "VALIDATION_ERROR")
+
+    def test_callback_with_valid_secret_and_missing_job_returns_no_leak_404(self) -> None:
+        app = create_app()
+        client = TestClient(app)
+
+        body = {
+            "event_id": "evt-3",
+            "status": "CREATED",
+            "occurred_at": "2026-02-22T00:00:00Z",
+            "correlation_id": "corr-3",
+        }
+
+        response = client.post(
+            "/api/v1/internal/jobs/missing-job/status",
+            headers={"X-Callback-Secret": "test-callback-secret"},
+            json=body,
+        )
+
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(response.json()["code"], "RESOURCE_NOT_FOUND")
+
+    def test_callback_replay_returns_200_and_replayed_payload(self) -> None:
+        app = create_app()
+        client = TestClient(app)
+        store = app.state.store
+        project = store.create_project(owner_id="owner-1", name="Project")
+        job = store.create_job(owner_id="owner-1", project_id=project.id)
+
+        body = {
+            "event_id": "evt-replay-1",
+            "status": "UPLOADING",
+            "occurred_at": "2026-02-22T00:00:00Z",
+            "correlation_id": "corr-replay-1",
+        }
+
+        first = client.post(
+            f"/api/v1/internal/jobs/{job.id}/status",
+            headers={"X-Callback-Secret": "test-callback-secret"},
+            json=body,
+        )
+        self.assertEqual(first.status_code, 204)
+
+        replay = client.post(
+            f"/api/v1/internal/jobs/{job.id}/status",
+            headers={"X-Callback-Secret": "test-callback-secret"},
+            json=body,
+        )
+        self.assertEqual(replay.status_code, 200)
+        self.assertEqual(replay.json()["event_id"], "evt-replay-1")
+        self.assertTrue(replay.json()["replayed"])
+        self.assertEqual(replay.json()["current_status"], "UPLOADING")
+
+    def test_callback_replay_payload_mismatch_returns_409(self) -> None:
+        app = create_app()
+        client = TestClient(app)
+        store = app.state.store
+        project = store.create_project(owner_id="owner-1", name="Project")
+        job = store.create_job(owner_id="owner-1", project_id=project.id)
+
+        initial = {
+            "event_id": "evt-replay-2",
+            "status": "UPLOADING",
+            "occurred_at": "2026-02-22T00:00:00Z",
+            "actor_type": "orchestrator",
+            "correlation_id": "corr-replay-2",
+        }
+        mismatch = {
+            "event_id": "evt-replay-2",
+            "status": "UPLOADING",
+            "occurred_at": "2026-02-22T00:00:00Z",
+            "actor_type": "system",
+            "correlation_id": "corr-replay-2",
+        }
+
+        first = client.post(
+            f"/api/v1/internal/jobs/{job.id}/status",
+            headers={"X-Callback-Secret": "test-callback-secret"},
+            json=initial,
+        )
+        self.assertEqual(first.status_code, 204)
+
+        second = client.post(
+            f"/api/v1/internal/jobs/{job.id}/status",
+            headers={"X-Callback-Secret": "test-callback-secret"},
+            json=mismatch,
+        )
+        self.assertEqual(second.status_code, 409)
+        self.assertEqual(second.json()["code"], "EVENT_ID_PAYLOAD_MISMATCH")
+        self.assertEqual(second.json()["details"]["event_id"], "evt-replay-2")
+
+    def test_callback_out_of_order_returns_409(self) -> None:
+        app = create_app()
+        client = TestClient(app)
+        store = app.state.store
+        project = store.create_project(owner_id="owner-1", name="Project")
+        job = store.create_job(owner_id="owner-1", project_id=project.id)
+
+        first = {
+            "event_id": "evt-order-1",
+            "status": "UPLOADING",
+            "occurred_at": "2026-02-22T01:00:00Z",
+            "correlation_id": "corr-order-1",
+        }
+        out_of_order = {
+            "event_id": "evt-order-2",
+            "status": "UPLOADED",
+            "occurred_at": "2026-02-22T00:30:00Z",
+            "correlation_id": "corr-order-2",
+        }
+
+        response1 = client.post(
+            f"/api/v1/internal/jobs/{job.id}/status",
+            headers={"X-Callback-Secret": "test-callback-secret"},
+            json=first,
+        )
+        self.assertEqual(response1.status_code, 204)
+
+        response2 = client.post(
+            f"/api/v1/internal/jobs/{job.id}/status",
+            headers={"X-Callback-Secret": "test-callback-secret"},
+            json=out_of_order,
+        )
+        self.assertEqual(response2.status_code, 409)
+        self.assertEqual(response2.json()["code"], "CALLBACK_OUT_OF_ORDER")
+
+    def test_callback_with_equal_occurred_at_returns_409(self) -> None:
+        app = create_app()
+        client = TestClient(app)
+        store = app.state.store
+        project = store.create_project(owner_id="owner-1", name="Project")
+        job = store.create_job(owner_id="owner-1", project_id=project.id)
+
+        first = {
+            "event_id": "evt-order-eq-1",
+            "status": "UPLOADING",
+            "occurred_at": "2026-02-22T01:00:00Z",
+            "correlation_id": "corr-order-eq-1",
+        }
+        equal_timestamp = {
+            "event_id": "evt-order-eq-2",
+            "status": "UPLOADED",
+            "occurred_at": "2026-02-22T01:00:00Z",
+            "correlation_id": "corr-order-eq-2",
+        }
+
+        response1 = client.post(
+            f"/api/v1/internal/jobs/{job.id}/status",
+            headers={"X-Callback-Secret": "test-callback-secret"},
+            json=first,
+        )
+        self.assertEqual(response1.status_code, 204)
+
+        response2 = client.post(
+            f"/api/v1/internal/jobs/{job.id}/status",
+            headers={"X-Callback-Secret": "test-callback-secret"},
+            json=equal_timestamp,
+        )
+        self.assertEqual(response2.status_code, 409)
+        self.assertEqual(response2.json()["code"], "CALLBACK_OUT_OF_ORDER")
 
 
 class AuthAdapterUnitTests(unittest.TestCase):

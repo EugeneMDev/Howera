@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 import os
+import re
 import sys
 import types
 import unittest
@@ -68,6 +69,8 @@ class AuthApiTests(_SettingsEnvCase):
         self.assertIn("/api/v1/projects/{projectId}", paths)
         self.assertIn("/api/v1/projects/{projectId}/jobs", paths)
         self.assertIn("/api/v1/jobs/{jobId}", paths)
+        self.assertIn("/api/v1/jobs/{jobId}/confirm-upload", paths)
+        self.assertIn("/api/v1/jobs/{jobId}/run", paths)
         self.assertIn("/api/v1/internal/jobs/{jobId}/status", paths)
 
         self.assertEqual(set(paths["/api/v1/projects"]["post"]["responses"].keys()), {"201", "401"})
@@ -79,8 +82,31 @@ class AuthApiTests(_SettingsEnvCase):
         )
         self.assertEqual(set(paths["/api/v1/jobs/{jobId}"]["get"]["responses"].keys()), {"200", "404"})
         self.assertEqual(
+            set(paths["/api/v1/jobs/{jobId}/confirm-upload"]["post"]["responses"].keys()),
+            {"200", "404", "409"},
+        )
+        self.assertEqual(
+            set(paths["/api/v1/jobs/{jobId}/run"]["post"]["responses"].keys()),
+            {"200", "202", "404", "409", "502"},
+        )
+        self.assertEqual(
             paths["/api/v1/jobs/{jobId}"]["get"]["responses"]["404"]["content"]["application/json"]["schema"]["$ref"],
             "#/components/schemas/NoLeakNotFoundError",
+        )
+        self.assertEqual(
+            paths["/api/v1/jobs/{jobId}/confirm-upload"]["post"]["responses"]["409"]["content"]["application/json"]["schema"]["oneOf"],
+            [
+                {"$ref": "#/components/schemas/FsmTransitionError"},
+                {"$ref": "#/components/schemas/VideoUriConflictError"},
+            ],
+        )
+        self.assertEqual(
+            paths["/api/v1/jobs/{jobId}/run"]["post"]["responses"]["409"]["content"]["application/json"]["schema"]["$ref"],
+            "#/components/schemas/FsmTransitionError",
+        )
+        self.assertEqual(
+            paths["/api/v1/jobs/{jobId}/run"]["post"]["responses"]["502"]["content"]["application/json"]["schema"]["$ref"],
+            "#/components/schemas/UpstreamDispatchError",
         )
         self.assertEqual(
             set(paths["/api/v1/internal/jobs/{jobId}/status"]["post"]["responses"].keys()),
@@ -427,6 +453,202 @@ class AuthApiTests(_SettingsEnvCase):
         )
         self.assertEqual(response2.status_code, 409)
         self.assertEqual(response2.json()["code"], "CALLBACK_OUT_OF_ORDER")
+
+    def test_auth_logging_exposes_correlation_metadata_without_token_leak(self) -> None:
+        app = create_app()
+        client = TestClient(app)
+
+        leaked_token = "not-a-valid-token-sensitive-123"
+        correlation_id = "corr-auth-log-1"
+
+        with self.assertLogs("app.routes.dependencies", level="WARNING") as captured:
+            response = client.post(
+                "/api/v1/projects/project-1/jobs",
+                headers={
+                    "Authorization": f"Bearer {leaked_token}",
+                    "X-Correlation-Id": correlation_id,
+                },
+            )
+
+        self.assertEqual(response.status_code, 401)
+        joined = "\n".join(captured.output)
+        self.assertIn("correlation_id=", joined)
+        self.assertRegex(joined, r"correlation_id=cid-[0-9a-f]{12}")
+        self.assertNotIn(correlation_id, joined)
+        self.assertNotIn(leaked_token, joined)
+        self.assertNotIn("Authorization", joined)
+
+    def test_callback_auth_logging_does_not_leak_callback_secret(self) -> None:
+        app = create_app()
+        client = TestClient(app)
+        store = app.state.store
+        project = store.create_project(owner_id="owner-1", name="Project")
+        job = store.create_job(owner_id="owner-1", project_id=project.id)
+
+        leaked_secret = "wrong-secret-sensitive-789"
+        correlation_id = "corr-callback-auth-log-1"
+        body = {
+            "event_id": "evt-callback-auth-log-1",
+            "status": "CREATED",
+            "occurred_at": "2026-02-22T00:00:00Z",
+            "correlation_id": correlation_id,
+        }
+
+        with self.assertLogs("app.routes.dependencies", level="WARNING") as captured:
+            response = client.post(
+                f"/api/v1/internal/jobs/{job.id}/status",
+                headers={
+                    "X-Callback-Secret": leaked_secret,
+                    "X-Correlation-Id": correlation_id,
+                },
+                json=body,
+            )
+
+        self.assertEqual(response.status_code, 401)
+        joined = "\n".join(captured.output)
+        self.assertIn("correlation_id=", joined)
+        self.assertRegex(joined, r"correlation_id=cid-[0-9a-f]{12}")
+        self.assertNotIn(correlation_id, joined)
+        self.assertNotIn(leaked_secret, joined)
+        self.assertNotIn("X-Callback-Secret", joined)
+
+    def test_callback_processing_logging_redacts_sensitive_payload_content(self) -> None:
+        app = create_app()
+        client = TestClient(app)
+        store = app.state.store
+        project = store.create_project(owner_id="owner-1", name="Project")
+        job = store.create_job(owner_id="owner-1", project_id=project.id)
+
+        sensitive_transcript = "TOP-SECRET-TRANSCRIPT-CONTENT"
+        sensitive_prompt = "prompt-password-do-not-log"
+        body = {
+            "event_id": "evt-callback-log-1",
+            "status": "UPLOADING",
+            "occurred_at": "2026-02-22T00:00:00Z",
+            "correlation_id": "corr-callback-log-1",
+            "artifact_updates": {"transcript_text": sensitive_transcript},
+            "failure_message": sensitive_prompt,
+        }
+
+        with self.assertLogs("app.services.internal_callbacks", level="INFO") as captured:
+            response = client.post(
+                f"/api/v1/internal/jobs/{job.id}/status",
+                headers={"X-Callback-Secret": "test-callback-secret"},
+                json=body,
+            )
+
+        self.assertEqual(response.status_code, 204)
+        joined = "\n".join(captured.output)
+        self.assertIn("correlation_id=", joined)
+        self.assertIn("event_id=", joined)
+        self.assertIn("job_id=", joined)
+        self.assertRegex(joined, r"correlation_id=cid-[0-9a-f]{12}")
+        self.assertRegex(joined, r"event_id=eid-[0-9a-f]{12}")
+        self.assertNotIn("corr-callback-log-1", joined)
+        self.assertNotIn("evt-callback-log-1", joined)
+        self.assertNotIn(sensitive_transcript, joined)
+        self.assertNotIn(sensitive_prompt, joined)
+        self.assertNotIn("test-callback-secret", joined)
+
+    def test_auth_logging_redacts_sensitive_content_inside_identifier_fields(self) -> None:
+        app = create_app()
+        client = TestClient(app)
+
+        leaked_token = "not-a-valid-token-sensitive-456"
+        correlation_id = "TOP-SECRET-TRANSCRIPT\\nPROMPT-CONTENT"
+
+        with self.assertLogs("app.routes.dependencies", level="WARNING") as captured:
+            response = client.post(
+                "/api/v1/projects/project-1/jobs",
+                headers={
+                    "Authorization": f"Bearer {leaked_token}",
+                    "X-Correlation-Id": correlation_id,
+                },
+            )
+
+        self.assertEqual(response.status_code, 401)
+        joined = "\n".join(captured.output)
+        self.assertRegex(joined, r"correlation_id=cid-[0-9a-f]{12}")
+        self.assertNotIn("TOP-SECRET-TRANSCRIPT", joined)
+        self.assertNotIn("PROMPT-CONTENT", joined)
+        self.assertNotIn(correlation_id, joined)
+        self.assertNotIn(leaked_token, joined)
+
+    def test_callback_logging_redacts_sensitive_content_inside_identifier_fields(self) -> None:
+        app = create_app()
+        client = TestClient(app)
+        store = app.state.store
+        project = store.create_project(owner_id="owner-1", name="Project")
+        job = store.create_job(owner_id="owner-1", project_id=project.id)
+
+        raw_event_id = "evt-secret-transcript-prompt-999"
+        raw_correlation_id = "corr-secret-transcript-prompt-888"
+        body = {
+            "event_id": raw_event_id,
+            "status": "UPLOADING",
+            "occurred_at": "2026-02-22T00:00:00Z",
+            "correlation_id": raw_correlation_id,
+        }
+
+        with self.assertLogs("app.services.internal_callbacks", level="INFO") as captured:
+            response = client.post(
+                f"/api/v1/internal/jobs/{job.id}/status",
+                headers={"X-Callback-Secret": "test-callback-secret"},
+                json=body,
+            )
+
+        self.assertEqual(response.status_code, 204)
+        joined = "\n".join(captured.output)
+        self.assertRegex(joined, r"correlation_id=cid-[0-9a-f]{12}")
+        self.assertRegex(joined, r"event_id=eid-[0-9a-f]{12}")
+        self.assertNotIn(raw_event_id, joined)
+        self.assertNotIn(raw_correlation_id, joined)
+        self.assertNotIn("secret-transcript-prompt", joined)
+
+    def test_run_logging_redacts_sensitive_dispatch_and_failure_values(self) -> None:
+        app = create_app()
+        client = TestClient(app)
+        store = app.state.store
+        owner_headers = {"Authorization": "Bearer test:owner-1:editor"}
+
+        project = client.post("/api/v1/projects", headers=owner_headers, json={"name": "Owned"}).json()
+
+        success_job = client.post(f"/api/v1/projects/{project['id']}/jobs", headers=owner_headers).json()
+        sensitive_video_uri = "s3://bucket/TOP-SECRET-VIDEO-URI.mp4"
+        client.post(
+            f"/api/v1/jobs/{success_job['id']}/confirm-upload",
+            headers=owner_headers,
+            json={"video_uri": sensitive_video_uri},
+        )
+
+        with self.assertLogs("app.services.jobs", level="INFO") as dispatch_logs:
+            run_success = client.post(f"/api/v1/jobs/{success_job['id']}/run", headers=owner_headers)
+
+        self.assertEqual(run_success.status_code, 202)
+        dispatch_joined = "\n".join(dispatch_logs.output)
+        self.assertRegex(dispatch_joined, r"job_id=jid-[0-9a-f]{12}")
+        self.assertRegex(dispatch_joined, r"dispatch_id=did-[0-9a-f]{12}")
+        self.assertNotIn(sensitive_video_uri, dispatch_joined)
+        self.assertNotIn("test-callback-secret", dispatch_joined)
+
+        failing_job = client.post(f"/api/v1/projects/{project['id']}/jobs", headers=owner_headers).json()
+        failure_video_uri = "s3://bucket/ANOTHER-SENSITIVE-VIDEO-URI.mp4"
+        client.post(
+            f"/api/v1/jobs/{failing_job['id']}/confirm-upload",
+            headers=owner_headers,
+            json={"video_uri": failure_video_uri},
+        )
+
+        store.dispatch_failure_message = "UPSTREAM-SECRET-DISPATCH-DETAIL"
+        with self.assertLogs("app.services.jobs", level="WARNING") as failure_logs:
+            run_failure = client.post(f"/api/v1/jobs/{failing_job['id']}/run", headers=owner_headers)
+
+        self.assertEqual(run_failure.status_code, 502)
+        failure_joined = "\n".join(failure_logs.output)
+        self.assertIn("code=ORCHESTRATOR_DISPATCH_FAILED", failure_joined)
+        self.assertRegex(failure_joined, r"job_id=jid-[0-9a-f]{12}")
+        self.assertNotIn("UPSTREAM-SECRET-DISPATCH-DETAIL", failure_joined)
+        self.assertNotIn(failure_video_uri, failure_joined)
 
 
 class AuthAdapterUnitTests(unittest.TestCase):

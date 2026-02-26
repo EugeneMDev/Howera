@@ -39,3 +39,19 @@ class Job(BaseModel):
     manifest: ArtifactManifest | None = None
     created_at: datetime
     updated_at: datetime | None = None
+
+
+class ConfirmUploadRequest(BaseModel):
+    video_uri: str
+
+
+class ConfirmUploadResponse(BaseModel):
+    job: Job
+    replayed: bool
+
+
+class RunJobResponse(BaseModel):
+    job_id: str
+    status: JobStatus
+    dispatch_id: str
+    replayed: bool

@@ -8,7 +8,7 @@ from typing import Any
 from typing import Literal
 from uuid import uuid4
 
-from app.schemas.job import JobStatus
+from app.schemas.job import ArtifactManifest, JobStatus
 
 
 @dataclass(slots=True)
@@ -27,6 +27,7 @@ class JobRecord:
     status: JobStatus
     created_at: datetime
     updated_at: datetime | None = None
+    manifest: ArtifactManifest | None = None
 
 
 @dataclass(slots=True)
@@ -44,6 +45,14 @@ class CallbackEventRecord:
 
 
 @dataclass(slots=True)
+class WorkflowDispatchRecord:
+    job_id: str
+    dispatch_id: str
+    payload: dict[str, str]
+    created_at: datetime
+
+
+@dataclass(slots=True)
 class InMemoryStore:
     """Simple, deterministic persistence layer for scaffolding and tests."""
 
@@ -51,8 +60,11 @@ class InMemoryStore:
     jobs: dict[str, JobRecord] = field(default_factory=dict)
     callback_events: dict[tuple[str, str], CallbackEventRecord] = field(default_factory=dict)
     latest_callback_at_by_job: dict[str, datetime] = field(default_factory=dict)
+    workflow_dispatches_by_job: dict[str, WorkflowDispatchRecord] = field(default_factory=dict)
     project_write_count: int = 0
     job_write_count: int = 0
+    dispatch_write_count: int = 0
+    dispatch_failure_message: str | None = None
 
     def create_project(self, owner_id: str, name: str) -> ProjectRecord:
         now = datetime.now(UTC)
@@ -102,3 +114,22 @@ class InMemoryStore:
 
     def get_job_for_internal_callback(self, job_id: str) -> JobRecord | None:
         return self.jobs.get(job_id)
+
+    def get_dispatch_for_job(self, job_id: str) -> WorkflowDispatchRecord | None:
+        return self.workflow_dispatches_by_job.get(job_id)
+
+    def create_dispatch_for_job(self, *, job_id: str, payload: dict[str, str]) -> WorkflowDispatchRecord:
+        if self.dispatch_failure_message is not None:
+            message = self.dispatch_failure_message
+            self.dispatch_failure_message = None
+            raise RuntimeError(message)
+
+        dispatch = WorkflowDispatchRecord(
+            job_id=job_id,
+            dispatch_id=f"dispatch-{uuid4()}",
+            payload=dict(payload),
+            created_at=datetime.now(UTC),
+        )
+        self.workflow_dispatches_by_job[job_id] = dispatch
+        self.dispatch_write_count += 1
+        return dispatch

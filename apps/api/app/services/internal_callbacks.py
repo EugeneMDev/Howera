@@ -2,12 +2,16 @@
 
 from dataclasses import dataclass
 from datetime import UTC, datetime
+import logging
 
+from app.core.logging_safety import safe_log_identifier
 from app.domain.job_fsm import ensure_transition
 from app.errors import ApiError
 from app.repositories.memory import CallbackEventRecord, InMemoryStore
 from app.schemas.internal import StatusCallbackRequest
 from app.schemas.job import JobStatus
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(slots=True)
@@ -22,9 +26,18 @@ class InternalCallbackService:
         self._store = store
 
     def process_status_callback(self, *, job_id: str, payload: StatusCallbackRequest) -> CallbackProcessResult:
+        safe_correlation_id = safe_log_identifier(payload.correlation_id, prefix="cid")
+        safe_event_id = safe_log_identifier(payload.event_id, prefix="eid")
+
         # Domain boundary: callbacks must target an existing job before state processing.
         job = self._store.get_job_for_internal_callback(job_id)
         if job is None:
+            logger.warning(
+                "callback.rejected correlation_id=%s job_id=%s event_id=%s code=RESOURCE_NOT_FOUND",
+                safe_correlation_id,
+                job_id,
+                safe_event_id,
+            )
             raise ApiError(status_code=404, code="RESOURCE_NOT_FOUND", message="Resource not found")
 
         callback_key = (job_id, payload.event_id)
@@ -52,6 +65,12 @@ class InternalCallbackService:
                 existing_event.correlation_id,
             )
             if existing_signature != payload_signature:
+                logger.warning(
+                    "callback.rejected correlation_id=%s job_id=%s event_id=%s code=EVENT_ID_PAYLOAD_MISMATCH",
+                    safe_correlation_id,
+                    job_id,
+                    safe_event_id,
+                )
                 raise ApiError(
                     status_code=409,
                     code="EVENT_ID_PAYLOAD_MISMATCH",
@@ -59,6 +78,13 @@ class InternalCallbackService:
                     details={"event_id": payload.event_id},
                 )
             latest = self._store.latest_callback_at_by_job.get(job_id)
+            logger.info(
+                "callback.replayed correlation_id=%s job_id=%s event_id=%s current_status=%s",
+                safe_correlation_id,
+                job_id,
+                safe_event_id,
+                job.status,
+            )
             return CallbackProcessResult(
                 replayed=True,
                 current_status=job.status,
@@ -67,6 +93,16 @@ class InternalCallbackService:
 
         latest_applied = self._store.latest_callback_at_by_job.get(job_id)
         if latest_applied is not None and payload.occurred_at <= latest_applied:
+            logger.warning(
+                "callback.rejected correlation_id=%s job_id=%s event_id=%s code=CALLBACK_OUT_OF_ORDER "
+                "latest_applied_occurred_at=%s current_status=%s attempted_status=%s",
+                safe_correlation_id,
+                job_id,
+                safe_event_id,
+                latest_applied.isoformat(),
+                job.status,
+                payload.status,
+            )
             raise ApiError(
                 status_code=409,
                 code="CALLBACK_OUT_OF_ORDER",
@@ -78,7 +114,22 @@ class InternalCallbackService:
                 },
             )
 
-        ensure_transition(job.status, payload.status)
+        previous_status = job.status
+        try:
+            ensure_transition(job.status, payload.status)
+        except ApiError as exc:
+            logger.warning(
+                "callback.rejected correlation_id=%s job_id=%s event_id=%s code=%s current_status=%s "
+                "attempted_status=%s",
+                safe_correlation_id,
+                job_id,
+                safe_event_id,
+                exc.payload.code,
+                previous_status,
+                payload.status,
+            )
+            raise
+
         job.status = payload.status
         job.updated_at = datetime.now(UTC)
         self._store.job_write_count += 1
@@ -96,6 +147,14 @@ class InternalCallbackService:
             correlation_id=payload.correlation_id,
         )
         self._store.latest_callback_at_by_job[job_id] = payload.occurred_at
+        logger.info(
+            "callback.applied correlation_id=%s job_id=%s event_id=%s prev_status=%s new_status=%s",
+            safe_correlation_id,
+            job_id,
+            safe_event_id,
+            previous_status,
+            job.status,
+        )
 
         return CallbackProcessResult(
             replayed=False,

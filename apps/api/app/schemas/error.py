@@ -27,6 +27,17 @@ class FsmTransitionError(BaseModel):
     details: TransitionErrorDetails
 
 
+class VideoUriConflictErrorDetails(BaseModel):
+    current_video_uri: str
+    submitted_video_uri: str
+
+
+class VideoUriConflictError(BaseModel):
+    code: Literal["VIDEO_URI_CONFLICT"]
+    message: str
+    details: VideoUriConflictErrorDetails
+
+
 class CallbackOrderingErrorDetails(BaseModel):
     latest_applied_occurred_at: datetime
     current_status: JobStatus
@@ -52,3 +63,9 @@ class EventIdPayloadMismatchError(BaseModel):
 class NoLeakNotFoundError(BaseModel):
     code: Literal["RESOURCE_NOT_FOUND"]
     message: str
+
+
+class UpstreamDispatchError(BaseModel):
+    code: Literal["ORCHESTRATOR_DISPATCH_FAILED"]
+    message: str
+    details: dict[str, Any] | None = None

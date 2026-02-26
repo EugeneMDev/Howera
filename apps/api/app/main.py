@@ -19,6 +19,8 @@ _OPENAPI_RESPONSE_CODES: dict[str, dict[str, set[str]]] = {
     "/api/v1/projects/{projectId}": {"get": {"200", "404"}},
     "/api/v1/projects/{projectId}/jobs": {"post": {"201", "404"}},
     "/api/v1/jobs/{jobId}": {"get": {"200", "404"}},
+    "/api/v1/jobs/{jobId}/confirm-upload": {"post": {"200", "404", "409"}},
+    "/api/v1/jobs/{jobId}/run": {"post": {"200", "202", "404", "409", "502"}},
     "/api/v1/internal/jobs/{jobId}/status": {"post": {"200", "204", "401", "404", "409"}},
 }
 
@@ -31,10 +33,19 @@ _CALLBACK_VALIDATION_PATHS: set[tuple[str, str]] = {
     ("POST", "/api/v1/internal/jobs/{jobId}/status"),
 }
 
+_CONFIRM_UPLOAD_VALIDATION_PATHS: set[tuple[str, str]] = {
+    ("POST", "/api/v1/jobs/{jobId}/confirm-upload"),
+}
+
 _INTERNAL_CALLBACK_409_ONEOF_REFS: list[str] = [
     "#/components/schemas/FsmTransitionError",
     "#/components/schemas/CallbackOrderingError",
     "#/components/schemas/EventIdPayloadMismatchError",
+]
+
+_CONFIRM_UPLOAD_409_ONEOF_REFS: list[str] = [
+    "#/components/schemas/FsmTransitionError",
+    "#/components/schemas/VideoUriConflictError",
 ]
 
 
@@ -75,6 +86,22 @@ def _apply_internal_callback_conflict_schema(schema: dict) -> None:
     content["schema"] = {"oneOf": [{"$ref": ref} for ref in _INTERNAL_CALLBACK_409_ONEOF_REFS]}
 
 
+def _apply_confirm_upload_conflict_schema(schema: dict) -> None:
+    """Force confirm-upload 409 response schema to match contract oneOf references."""
+    path_item = schema.get("paths", {}).get("/api/v1/jobs/{jobId}/confirm-upload")
+    if not path_item:
+        return
+
+    operation = path_item.get("post")
+    if not operation:
+        return
+
+    responses = operation.setdefault("responses", {})
+    conflict = responses.setdefault("409", {"description": "See API contract"})
+    content = conflict.setdefault("content", {}).setdefault("application/json", {})
+    content["schema"] = {"oneOf": [{"$ref": ref} for ref in _CONFIRM_UPLOAD_409_ONEOF_REFS]}
+
+
 def create_app() -> FastAPI:
     app = FastAPI(title="Howera API", version="1.1.0")
     app.state.store = InMemoryStore()
@@ -98,6 +125,9 @@ def create_app() -> FastAPI:
         if route_key in _CALLBACK_VALIDATION_PATHS:
             payload = ErrorResponse(code="VALIDATION_ERROR", message="Invalid callback payload")
             return JSONResponse(status_code=409, content=payload.model_dump())
+        if route_key in _CONFIRM_UPLOAD_VALIDATION_PATHS:
+            payload = ErrorResponse(code="VALIDATION_ERROR", message="Invalid confirm-upload payload")
+            return JSONResponse(status_code=409, content=payload.model_dump())
 
         return await request_validation_exception_handler(request, exc)
 
@@ -117,6 +147,7 @@ def create_app() -> FastAPI:
         )
         _apply_contract_response_codes(schema)
         _apply_internal_callback_conflict_schema(schema)
+        _apply_confirm_upload_conflict_schema(schema)
         app.openapi_schema = schema
         return app.openapi_schema
 

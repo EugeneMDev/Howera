@@ -19,6 +19,7 @@ from app.adapters.auth.mock_auth import MockTokenVerifier
 from app.core.config import Settings, get_settings
 from app.main import create_app
 from app.routes.dependencies import get_project_service, get_token_verifier
+from app.schemas.job import JobStatus
 from app.schemas.project import Project
 
 
@@ -315,6 +316,87 @@ class AuthApiTests(_SettingsEnvCase):
         self.assertEqual(response.status_code, 404)
         self.assertEqual(response.json()["code"], "RESOURCE_NOT_FOUND")
 
+    def test_callback_invalid_self_transition_returns_409_without_side_effects(self) -> None:
+        app = create_app()
+        client = TestClient(app)
+        store = app.state.store
+        project = store.create_project(owner_id="owner-1", name="Project")
+        job = store.create_job(owner_id="owner-1", project_id=project.id)
+        before_status = store.jobs[job.id].status
+        before_updated_at = store.jobs[job.id].updated_at
+        before_job_writes = store.job_write_count
+        before_callback_event_count = len(store.callback_events)
+        before_transition_audit_count = len(store.transition_audit_events)
+        before_latest = store.latest_callback_at_by_job.get(job.id)
+
+        body = {
+            "event_id": "evt-self-invalid-1",
+            "status": "CREATED",
+            "occurred_at": "2026-02-22T00:00:00Z",
+            "correlation_id": "corr-self-invalid-1",
+        }
+
+        response = client.post(
+            f"/api/v1/internal/jobs/{job.id}/status",
+            headers={"X-Callback-Secret": "test-callback-secret"},
+            json=body,
+        )
+
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.json()["code"], "FSM_TRANSITION_INVALID")
+        self.assertEqual(response.json()["details"]["current_status"], "CREATED")
+        self.assertEqual(response.json()["details"]["attempted_status"], "CREATED")
+        self.assertEqual(
+            set(response.json()["details"]["allowed_next_statuses"]),
+            {"UPLOADING", "UPLOADED", "CANCELLED"},
+        )
+        self.assertEqual(store.jobs[job.id].status, before_status)
+        self.assertEqual(store.jobs[job.id].updated_at, before_updated_at)
+        self.assertEqual(store.job_write_count, before_job_writes)
+        self.assertEqual(len(store.callback_events), before_callback_event_count)
+        self.assertEqual(len(store.transition_audit_events), before_transition_audit_count)
+        self.assertNotIn((job.id, "evt-self-invalid-1"), store.callback_events)
+        self.assertEqual(store.latest_callback_at_by_job.get(job.id), before_latest)
+
+    def test_callback_from_terminal_state_returns_409_without_side_effects(self) -> None:
+        app = create_app()
+        client = TestClient(app)
+        store = app.state.store
+        project = store.create_project(owner_id="owner-1", name="Project")
+        job = store.create_job(owner_id="owner-1", project_id=project.id)
+        store.jobs[job.id].status = JobStatus.DONE
+
+        before_status = store.jobs[job.id].status
+        before_updated_at = store.jobs[job.id].updated_at
+        before_job_writes = store.job_write_count
+        before_callback_event_count = len(store.callback_events)
+        before_transition_audit_count = len(store.transition_audit_events)
+        before_latest = store.latest_callback_at_by_job.get(job.id)
+
+        response = client.post(
+            f"/api/v1/internal/jobs/{job.id}/status",
+            headers={"X-Callback-Secret": "test-callback-secret"},
+            json={
+                "event_id": "evt-terminal-invalid-1",
+                "status": "UPLOADING",
+                "occurred_at": "2026-02-22T00:05:00Z",
+                "correlation_id": "corr-terminal-invalid-1",
+            },
+        )
+
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.json()["code"], "FSM_TERMINAL_IMMUTABLE")
+        self.assertEqual(response.json()["details"]["current_status"], "DONE")
+        self.assertEqual(response.json()["details"]["attempted_status"], "UPLOADING")
+        self.assertEqual(response.json()["details"]["allowed_next_statuses"], [])
+        self.assertEqual(store.jobs[job.id].status, before_status)
+        self.assertEqual(store.jobs[job.id].updated_at, before_updated_at)
+        self.assertEqual(store.job_write_count, before_job_writes)
+        self.assertEqual(len(store.callback_events), before_callback_event_count)
+        self.assertEqual(len(store.transition_audit_events), before_transition_audit_count)
+        self.assertNotIn((job.id, "evt-terminal-invalid-1"), store.callback_events)
+        self.assertEqual(store.latest_callback_at_by_job.get(job.id), before_latest)
+
     def test_callback_replay_returns_200_and_replayed_payload(self) -> None:
         app = create_app()
         client = TestClient(app)
@@ -335,6 +417,13 @@ class AuthApiTests(_SettingsEnvCase):
             json=body,
         )
         self.assertEqual(first.status_code, 204)
+        self.assertIn((job.id, "evt-replay-1"), store.callback_events)
+        first_status = store.jobs[job.id].status
+        first_updated_at = store.jobs[job.id].updated_at
+        first_job_writes = store.job_write_count
+        first_callback_event_count = len(store.callback_events)
+        first_transition_audit_count = len(store.transition_audit_events)
+        first_latest = store.latest_callback_at_by_job[job.id]
 
         replay = client.post(
             f"/api/v1/internal/jobs/{job.id}/status",
@@ -345,6 +434,12 @@ class AuthApiTests(_SettingsEnvCase):
         self.assertEqual(replay.json()["event_id"], "evt-replay-1")
         self.assertTrue(replay.json()["replayed"])
         self.assertEqual(replay.json()["current_status"], "UPLOADING")
+        self.assertEqual(store.jobs[job.id].status, first_status)
+        self.assertEqual(store.jobs[job.id].updated_at, first_updated_at)
+        self.assertEqual(store.job_write_count, first_job_writes)
+        self.assertEqual(len(store.callback_events), first_callback_event_count)
+        self.assertEqual(len(store.transition_audit_events), first_transition_audit_count)
+        self.assertEqual(store.latest_callback_at_by_job[job.id], first_latest)
 
     def test_callback_replay_payload_mismatch_returns_409(self) -> None:
         app = create_app()
@@ -374,6 +469,12 @@ class AuthApiTests(_SettingsEnvCase):
             json=initial,
         )
         self.assertEqual(first.status_code, 204)
+        status_before_conflict = store.jobs[job.id].status
+        updated_at_before_conflict = store.jobs[job.id].updated_at
+        job_writes_before_conflict = store.job_write_count
+        callback_event_count_before_conflict = len(store.callback_events)
+        transition_audit_count_before_conflict = len(store.transition_audit_events)
+        latest_before_conflict = store.latest_callback_at_by_job[job.id]
 
         second = client.post(
             f"/api/v1/internal/jobs/{job.id}/status",
@@ -383,6 +484,12 @@ class AuthApiTests(_SettingsEnvCase):
         self.assertEqual(second.status_code, 409)
         self.assertEqual(second.json()["code"], "EVENT_ID_PAYLOAD_MISMATCH")
         self.assertEqual(second.json()["details"]["event_id"], "evt-replay-2")
+        self.assertEqual(store.jobs[job.id].status, status_before_conflict)
+        self.assertEqual(store.jobs[job.id].updated_at, updated_at_before_conflict)
+        self.assertEqual(store.job_write_count, job_writes_before_conflict)
+        self.assertEqual(len(store.callback_events), callback_event_count_before_conflict)
+        self.assertEqual(len(store.transition_audit_events), transition_audit_count_before_conflict)
+        self.assertEqual(store.latest_callback_at_by_job[job.id], latest_before_conflict)
 
     def test_callback_out_of_order_returns_409(self) -> None:
         app = create_app()
@@ -410,6 +517,12 @@ class AuthApiTests(_SettingsEnvCase):
             json=first,
         )
         self.assertEqual(response1.status_code, 204)
+        status_before_conflict = store.jobs[job.id].status
+        updated_at_before_conflict = store.jobs[job.id].updated_at
+        job_writes_before_conflict = store.job_write_count
+        callback_event_count_before_conflict = len(store.callback_events)
+        transition_audit_count_before_conflict = len(store.transition_audit_events)
+        latest_before_conflict = store.latest_callback_at_by_job[job.id]
 
         response2 = client.post(
             f"/api/v1/internal/jobs/{job.id}/status",
@@ -418,6 +531,12 @@ class AuthApiTests(_SettingsEnvCase):
         )
         self.assertEqual(response2.status_code, 409)
         self.assertEqual(response2.json()["code"], "CALLBACK_OUT_OF_ORDER")
+        self.assertEqual(store.jobs[job.id].status, status_before_conflict)
+        self.assertEqual(store.jobs[job.id].updated_at, updated_at_before_conflict)
+        self.assertEqual(store.job_write_count, job_writes_before_conflict)
+        self.assertEqual(len(store.callback_events), callback_event_count_before_conflict)
+        self.assertEqual(len(store.transition_audit_events), transition_audit_count_before_conflict)
+        self.assertEqual(store.latest_callback_at_by_job[job.id], latest_before_conflict)
 
     def test_callback_with_equal_occurred_at_returns_409(self) -> None:
         app = create_app()
@@ -445,6 +564,12 @@ class AuthApiTests(_SettingsEnvCase):
             json=first,
         )
         self.assertEqual(response1.status_code, 204)
+        status_before_conflict = store.jobs[job.id].status
+        updated_at_before_conflict = store.jobs[job.id].updated_at
+        job_writes_before_conflict = store.job_write_count
+        callback_event_count_before_conflict = len(store.callback_events)
+        transition_audit_count_before_conflict = len(store.transition_audit_events)
+        latest_before_conflict = store.latest_callback_at_by_job[job.id]
 
         response2 = client.post(
             f"/api/v1/internal/jobs/{job.id}/status",
@@ -453,6 +578,12 @@ class AuthApiTests(_SettingsEnvCase):
         )
         self.assertEqual(response2.status_code, 409)
         self.assertEqual(response2.json()["code"], "CALLBACK_OUT_OF_ORDER")
+        self.assertEqual(store.jobs[job.id].status, status_before_conflict)
+        self.assertEqual(store.jobs[job.id].updated_at, updated_at_before_conflict)
+        self.assertEqual(store.job_write_count, job_writes_before_conflict)
+        self.assertEqual(len(store.callback_events), callback_event_count_before_conflict)
+        self.assertEqual(len(store.transition_audit_events), transition_audit_count_before_conflict)
+        self.assertEqual(store.latest_callback_at_by_job[job.id], latest_before_conflict)
 
     def test_auth_logging_exposes_correlation_metadata_without_token_leak(self) -> None:
         app = create_app()

@@ -292,6 +292,12 @@ class JobOwnershipApiTests(_SettingsEnvCase):
 
         self.assertEqual(response.status_code, 409)
         self.assertEqual(response.json()["code"], "FSM_TRANSITION_INVALID")
+        self.assertEqual(response.json()["details"]["current_status"], "CREATED")
+        self.assertEqual(response.json()["details"]["attempted_status"], "AUDIO_EXTRACTING")
+        self.assertEqual(
+            set(response.json()["details"]["allowed_next_statuses"]),
+            {"UPLOADING", "UPLOADED", "CANCELLED"},
+        )
         self.assertEqual(store.dispatch_write_count, before_dispatch_writes)
         self.assertEqual(store.job_write_count, before_job_writes)
         self.assertEqual(store.jobs[created_job["id"]].status.value, "CREATED")
@@ -369,6 +375,12 @@ class JobOwnershipApiTests(_SettingsEnvCase):
 
         self.assertEqual(second.status_code, 409)
         self.assertEqual(second.json()["code"], "FSM_TRANSITION_INVALID")
+        self.assertEqual(second.json()["details"]["current_status"], "AUDIO_EXTRACTING")
+        self.assertEqual(second.json()["details"]["attempted_status"], "AUDIO_EXTRACTING")
+        self.assertEqual(
+            set(second.json()["details"]["allowed_next_statuses"]),
+            {"AUDIO_EXTRACTING", "AUDIO_READY", "FAILED", "CANCELLED"},
+        )
         self.assertEqual(store.dispatch_write_count, before_dispatch_writes)
         self.assertEqual(store.job_write_count, before_job_writes)
 
@@ -394,6 +406,31 @@ class JobOwnershipApiTests(_SettingsEnvCase):
         self.assertEqual(store.dispatch_write_count, before_dispatch_writes)
         self.assertEqual(store.job_write_count, before_job_writes)
         self.assertIsNone(store.get_dispatch_for_job(created_job["id"]))
+
+    def test_run_job_terminal_states_return_409_terminal_immutable_without_dispatch(self) -> None:
+        app = create_app()
+        client = TestClient(app)
+        store = app.state.store
+        owner_headers = {"Authorization": "Bearer test:owner-1:editor"}
+
+        project = client.post("/api/v1/projects", headers=owner_headers, json={"name": "Owned"}).json()
+        for terminal_status in ("FAILED", "CANCELLED", "DONE"):
+            with self.subTest(terminal_status=terminal_status):
+                created_job = client.post(f"/api/v1/projects/{project['id']}/jobs", headers=owner_headers).json()
+                store.jobs[created_job["id"]].status = JobStatus(terminal_status)
+                before_dispatch_writes = store.dispatch_write_count
+                before_job_writes = store.job_write_count
+
+                response = client.post(f"/api/v1/jobs/{created_job['id']}/run", headers=owner_headers)
+
+                self.assertEqual(response.status_code, 409)
+                self.assertEqual(response.json()["code"], "FSM_TERMINAL_IMMUTABLE")
+                self.assertEqual(response.json()["details"]["current_status"], terminal_status)
+                self.assertEqual(response.json()["details"]["attempted_status"], "AUDIO_EXTRACTING")
+                self.assertEqual(response.json()["details"]["allowed_next_statuses"], [])
+                self.assertEqual(store.dispatch_write_count, before_dispatch_writes)
+                self.assertEqual(store.job_write_count, before_job_writes)
+                self.assertIsNone(store.get_dispatch_for_job(created_job["id"]))
 
 
 class JobOwnershipUnitTests(unittest.TestCase):
@@ -473,7 +510,32 @@ class JobOwnershipUnitTests(unittest.TestCase):
             service.run_job(owner_id="user-a", job_id=created_job.id)
         self.assertEqual(invalid_state.exception.status_code, 409)
         self.assertEqual(invalid_state.exception.payload.code, "FSM_TRANSITION_INVALID")
+        self.assertEqual(invalid_state.exception.payload.details["current_status"], JobStatus.CREATED)
+        self.assertEqual(
+            set(invalid_state.exception.payload.details["allowed_next_statuses"]),
+            {JobStatus.UPLOADING, JobStatus.UPLOADED, JobStatus.CANCELLED},
+        )
         self.assertEqual(store.dispatch_write_count, 0)
+
+        for terminal_status in (JobStatus.FAILED, JobStatus.CANCELLED, JobStatus.DONE):
+            with self.subTest(terminal_status=terminal_status):
+                terminal_job = service.create_job(owner_id="user-a", project_id=project.id)
+                store.jobs[terminal_job.id].status = terminal_status
+                before_dispatch_writes = store.dispatch_write_count
+                before_job_writes = store.job_write_count
+
+                with self.assertRaises(ApiError) as terminal_error:
+                    service.run_job(owner_id="user-a", job_id=terminal_job.id)
+                self.assertEqual(terminal_error.exception.status_code, 409)
+                self.assertEqual(terminal_error.exception.payload.code, "FSM_TERMINAL_IMMUTABLE")
+                self.assertEqual(terminal_error.exception.payload.details["current_status"], terminal_status)
+                self.assertEqual(
+                    terminal_error.exception.payload.details["attempted_status"],
+                    JobStatus.AUDIO_EXTRACTING,
+                )
+                self.assertEqual(terminal_error.exception.payload.details["allowed_next_statuses"], [])
+                self.assertEqual(store.dispatch_write_count, before_dispatch_writes)
+                self.assertEqual(store.job_write_count, before_job_writes)
 
         uploaded_job = service.create_job(owner_id="user-a", project_id=project.id)
         service.confirm_upload(owner_id="user-a", job_id=uploaded_job.id, video_uri="s3://bucket/video-b.mp4")

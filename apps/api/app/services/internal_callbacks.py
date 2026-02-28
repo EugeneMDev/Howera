@@ -1,11 +1,10 @@
 """Internal callback service layer."""
 
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime
 import logging
 
 from app.core.logging_safety import safe_log_identifier
-from app.domain.job_fsm import ensure_transition
 from app.errors import ApiError
 from app.repositories.memory import CallbackEventRecord, InMemoryStore
 from app.schemas.internal import StatusCallbackRequest
@@ -114,9 +113,24 @@ class InternalCallbackService:
                 },
             )
 
+        callback_event = CallbackEventRecord(
+            job_id=job_id,
+            event_id=payload.event_id,
+            status=payload.status,
+            occurred_at=payload.occurred_at,
+            actor_type=payload.actor_type,
+            artifact_updates=payload.artifact_updates,
+            failure_code=payload.failure_code,
+            failure_message=payload.failure_message,
+            failed_stage=payload.failed_stage,
+            correlation_id=payload.correlation_id,
+        )
         previous_status = job.status
         try:
-            ensure_transition(job.status, payload.status)
+            self._store.apply_callback_mutation(
+                job=job,
+                callback_event=callback_event,
+            )
         except ApiError as exc:
             logger.warning(
                 "callback.rejected correlation_id=%s job_id=%s event_id=%s code=%s current_status=%s "
@@ -130,23 +144,6 @@ class InternalCallbackService:
             )
             raise
 
-        job.status = payload.status
-        job.updated_at = datetime.now(UTC)
-        self._store.job_write_count += 1
-
-        self._store.callback_events[callback_key] = CallbackEventRecord(
-            job_id=job_id,
-            event_id=payload.event_id,
-            status=payload.status,
-            occurred_at=payload.occurred_at,
-            actor_type=payload.actor_type,
-            artifact_updates=payload.artifact_updates,
-            failure_code=payload.failure_code,
-            failure_message=payload.failure_message,
-            failed_stage=payload.failed_stage,
-            correlation_id=payload.correlation_id,
-        )
-        self._store.latest_callback_at_by_job[job_id] = payload.occurred_at
         logger.info(
             "callback.applied correlation_id=%s job_id=%s event_id=%s prev_status=%s new_status=%s",
             safe_correlation_id,

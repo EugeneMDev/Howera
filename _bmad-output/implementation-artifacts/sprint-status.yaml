@@ -51,11 +51,11 @@ development_status:
   2-1-confirm-job-upload-with-video-uri: done
   2-2-start-workflow-run-for-an-upload-confirmed-job: done
   epic-2-retrospective: optional
-  epic-3: backlog
-  3-1-enforce-fsm-transition-rules-and-lifecycle-invariants: backlog
-  3-2-validate-callback-contract-idempotency-and-ordering-policy: backlog
-  3-3-transactional-consistency-for-state-manifest-and-failure-metadata: backlog
-  3-4-emit-auditable-status-transition-events: backlog
+  epic-3: in-progress
+  3-1-enforce-fsm-transition-rules-and-lifecycle-invariants: done
+  3-2-validate-callback-contract-idempotency-and-ordering-policy: done
+  3-3-transactional-consistency-for-state-manifest-and-failure-metadata: done
+  3-4-emit-auditable-status-transition-events: done
   3-5-cancel-running-job-via-fsm-governed-rules: backlog
   3-6-retry-failed-job-from-checkpoint-with-policy-bound-model-profile: backlog
   epic-3-retrospective: optional

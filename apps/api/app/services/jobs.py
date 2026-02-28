@@ -1,10 +1,9 @@
 """Job service layer."""
 
-from datetime import UTC, datetime
 import logging
 
 from app.core.logging_safety import safe_log_identifier
-from app.domain.job_fsm import ensure_transition
+from app.domain.job_fsm import allowed_next_statuses, ensure_transition
 from app.errors import ApiError
 from app.repositories.memory import InMemoryStore, JobRecord
 from app.schemas.job import ArtifactManifest, ConfirmUploadResponse, Job, JobStatus, RunJobResponse
@@ -50,9 +49,7 @@ class JobService:
                 },
             )
 
-        ensure_transition(record.status, JobStatus.UPLOADED)
-        record.status = JobStatus.UPLOADED
-        record.updated_at = datetime.now(UTC)
+        self._store.transition_job_status(job=record, new_status=JobStatus.UPLOADED)
         existing_manifest = record.manifest or ArtifactManifest()
         record.manifest = ArtifactManifest(
             video_uri=video_uri,
@@ -61,7 +58,6 @@ class JobService:
             draft_uri=existing_manifest.draft_uri,
             exports=existing_manifest.exports,
         )
-        self._store.job_write_count += 1
 
         return ConfirmUploadResponse(job=self._to_job(record), replayed=False)
 
@@ -89,6 +85,10 @@ class JobService:
 
         # Run start is explicitly gated to UPLOADED; in-progress states are replay-only via dispatch record.
         if record.status is not JobStatus.UPLOADED:
+            # Route through canonical FSM validation so terminal states return FSM_TERMINAL_IMMUTABLE.
+            ensure_transition(record.status, JobStatus.AUDIO_EXTRACTING)
+            # If ensure_transition returns here, this is the equal-state case (AUDIO_EXTRACTING -> AUDIO_EXTRACTING),
+            # which run treats as invalid unless backed by an existing dispatch replay record.
             raise ApiError(
                 status_code=409,
                 code="FSM_TRANSITION_INVALID",
@@ -96,11 +96,9 @@ class JobService:
                 details={
                     "current_status": record.status,
                     "attempted_status": JobStatus.AUDIO_EXTRACTING,
-                    "allowed_next_statuses": [],
+                    "allowed_next_statuses": allowed_next_statuses(record.status),
                 },
             )
-
-        ensure_transition(record.status, JobStatus.AUDIO_EXTRACTING)
 
         manifest = record.manifest or ArtifactManifest()
         video_uri = (manifest.video_uri or "").strip()
@@ -112,7 +110,7 @@ class JobService:
                 details={
                     "current_status": record.status,
                     "attempted_status": JobStatus.AUDIO_EXTRACTING,
-                    "allowed_next_statuses": [],
+                    "allowed_next_statuses": allowed_next_statuses(record.status),
                 },
             )
 
@@ -137,9 +135,7 @@ class JobService:
                 message="Failed to dispatch workflow execution",
             ) from exc
 
-        record.status = JobStatus.AUDIO_EXTRACTING
-        record.updated_at = datetime.now(UTC)
-        self._store.job_write_count += 1
+        self._store.transition_job_status(job=record, new_status=JobStatus.AUDIO_EXTRACTING)
 
         safe_dispatch_id = safe_log_identifier(dispatch.dispatch_id, prefix="did")
         logger.info(

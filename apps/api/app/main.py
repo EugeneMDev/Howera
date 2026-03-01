@@ -10,8 +10,13 @@ from fastapi.responses import JSONResponse
 
 from app.errors import ApiError
 from app.repositories.memory import InMemoryStore
-from app.routes import internal_router, jobs_router, projects_router
-from app.schemas.error import ErrorResponse
+from app.routes import instructions_router, internal_router, jobs_router, projects_router
+from app.schemas.error import (
+    ErrorResponse,
+    NoLeakNotFoundError,
+    VersionConflictError,
+    VersionConflictErrorDetails,
+)
 
 
 _OPENAPI_RESPONSE_CODES: dict[str, dict[str, set[str]]] = {
@@ -19,8 +24,15 @@ _OPENAPI_RESPONSE_CODES: dict[str, dict[str, set[str]]] = {
     "/api/v1/projects/{projectId}": {"get": {"200", "404"}},
     "/api/v1/projects/{projectId}/jobs": {"post": {"201", "404"}},
     "/api/v1/jobs/{jobId}": {"get": {"200", "404"}},
+    "/api/v1/jobs/{jobId}/transcript": {"get": {"200", "404", "409"}},
     "/api/v1/jobs/{jobId}/confirm-upload": {"post": {"200", "404", "409"}},
     "/api/v1/jobs/{jobId}/run": {"post": {"200", "202", "404", "409", "502"}},
+    "/api/v1/jobs/{jobId}/retry": {"post": {"200", "202", "404", "409", "502"}},
+    "/api/v1/jobs/{jobId}/cancel": {"post": {"200", "404", "409"}},
+    "/api/v1/instructions/{instructionId}": {
+        "get": {"200", "404"},
+        "put": {"200", "404", "409"},
+    },
     "/api/v1/internal/jobs/{jobId}/status": {"post": {"200", "204", "401", "404", "409"}},
 }
 
@@ -35,6 +47,18 @@ _CALLBACK_VALIDATION_PATHS: set[tuple[str, str]] = {
 
 _CONFIRM_UPLOAD_VALIDATION_PATHS: set[tuple[str, str]] = {
     ("POST", "/api/v1/jobs/{jobId}/confirm-upload"),
+}
+
+_TRANSCRIPT_VALIDATION_PATHS: set[tuple[str, str]] = {
+    ("GET", "/api/v1/jobs/{jobId}/transcript"),
+}
+
+_INSTRUCTION_VALIDATION_PATHS: set[tuple[str, str]] = {
+    ("GET", "/api/v1/instructions/{instructionId}"),
+}
+
+_INSTRUCTION_UPDATE_VALIDATION_PATHS: set[tuple[str, str]] = {
+    ("PUT", "/api/v1/instructions/{instructionId}"),
 }
 
 _INTERNAL_CALLBACK_409_ONEOF_REFS: list[str] = [
@@ -102,6 +126,82 @@ def _apply_confirm_upload_conflict_schema(schema: dict) -> None:
     content["schema"] = {"oneOf": [{"$ref": ref} for ref in _CONFIRM_UPLOAD_409_ONEOF_REFS]}
 
 
+def _apply_transcript_contract_schema(schema: dict) -> None:
+    """Force transcript endpoint query/response schema details to match the API contract."""
+    path_item = schema.get("paths", {}).get("/api/v1/jobs/{jobId}/transcript")
+    if not path_item:
+        return
+
+    operation = path_item.get("get")
+    if not operation:
+        return
+
+    responses = operation.setdefault("responses", {})
+    conflict = responses.setdefault("409", {"description": "See API contract"})
+    content = conflict.setdefault("content", {}).setdefault("application/json", {})
+    content["schema"] = {"$ref": "#/components/schemas/Error"}
+
+    for parameter in operation.get("parameters", []):
+        if parameter.get("name") == "limit" and parameter.get("in") == "query":
+            parameter.setdefault("schema", {}).update({"type": "integer", "default": 200, "minimum": 1, "maximum": 500})
+        if parameter.get("name") == "cursor" and parameter.get("in") == "query":
+            parameter["schema"] = {"type": "string"}
+
+
+def _apply_instruction_contract_schema(schema: dict) -> None:
+    """Force instruction query/response schema details to match the API contract."""
+    path_item = schema.get("paths", {}).get("/api/v1/instructions/{instructionId}")
+    if not path_item:
+        return
+
+    operation = path_item.get("get")
+    if not operation:
+        return
+
+    for parameter in operation.get("parameters", []):
+        if parameter.get("name") == "version" and parameter.get("in") == "query":
+            parameter["schema"] = {"type": "integer", "minimum": 1}
+
+    put_operation = path_item.get("put")
+    if put_operation:
+        request_body = put_operation.setdefault("requestBody", {}).setdefault("content", {}).setdefault("application/json", {})
+        request_body["schema"] = {"$ref": "#/components/schemas/UpdateInstructionRequest"}
+        put_responses = put_operation.setdefault("responses", {})
+        conflict = put_responses.setdefault("409", {"description": "See API contract"})
+        conflict_content = conflict.setdefault("content", {}).setdefault("application/json", {})
+        conflict_content["schema"] = {"$ref": "#/components/schemas/VersionConflictError"}
+
+    instruction_schema = schema.get("components", {}).get("schemas", {}).get("Instruction")
+    if not instruction_schema:
+        return
+    instruction_schema.setdefault("properties", {})["id"] = {
+        "type": "string",
+        "deprecated": True,
+        "description": "Deprecated alias of instruction_id.",
+    }
+
+
+async def _instruction_update_validation_payload(request: Request) -> VersionConflictError:
+    """Normalize invalid PUT payloads into the endpoint's contract-safe 409 schema."""
+    base_version = 0
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = None
+    if isinstance(payload, dict):
+        candidate = payload.get("base_version")
+        if isinstance(candidate, int):
+            base_version = candidate
+    return VersionConflictError(
+        code="VERSION_CONFLICT",
+        message="Instruction base version does not match current version.",
+        details=VersionConflictErrorDetails(
+            base_version=base_version,
+            current_version=0,
+        ),
+    )
+
+
 def create_app() -> FastAPI:
     app = FastAPI(title="Howera API", version="1.1.0")
     app.state.store = InMemoryStore()
@@ -128,12 +228,22 @@ def create_app() -> FastAPI:
         if route_key in _CONFIRM_UPLOAD_VALIDATION_PATHS:
             payload = ErrorResponse(code="VALIDATION_ERROR", message="Invalid confirm-upload payload")
             return JSONResponse(status_code=409, content=payload.model_dump())
+        if route_key in _TRANSCRIPT_VALIDATION_PATHS:
+            payload = ErrorResponse(code="VALIDATION_ERROR", message="Invalid transcript query parameters")
+            return JSONResponse(status_code=409, content=payload.model_dump())
+        if route_key in _INSTRUCTION_VALIDATION_PATHS:
+            payload = NoLeakNotFoundError(code="RESOURCE_NOT_FOUND", message="Resource not found")
+            return JSONResponse(status_code=404, content=payload.model_dump())
+        if route_key in _INSTRUCTION_UPDATE_VALIDATION_PATHS:
+            payload = await _instruction_update_validation_payload(request)
+            return JSONResponse(status_code=409, content=payload.model_dump())
 
         return await request_validation_exception_handler(request, exc)
 
     api_prefix = "/api/v1"
     app.include_router(projects_router, prefix=api_prefix)
     app.include_router(jobs_router, prefix=api_prefix)
+    app.include_router(instructions_router, prefix=api_prefix)
     app.include_router(internal_router, prefix=api_prefix)
 
     def custom_openapi() -> dict:
@@ -148,6 +258,8 @@ def create_app() -> FastAPI:
         _apply_contract_response_codes(schema)
         _apply_internal_callback_conflict_schema(schema)
         _apply_confirm_upload_conflict_schema(schema)
+        _apply_transcript_contract_schema(schema)
+        _apply_instruction_contract_schema(schema)
         app.openapi_schema = schema
         return app.openapi_schema
 

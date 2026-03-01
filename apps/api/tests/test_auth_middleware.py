@@ -70,8 +70,12 @@ class AuthApiTests(_SettingsEnvCase):
         self.assertIn("/api/v1/projects/{projectId}", paths)
         self.assertIn("/api/v1/projects/{projectId}/jobs", paths)
         self.assertIn("/api/v1/jobs/{jobId}", paths)
+        self.assertIn("/api/v1/jobs/{jobId}/transcript", paths)
         self.assertIn("/api/v1/jobs/{jobId}/confirm-upload", paths)
         self.assertIn("/api/v1/jobs/{jobId}/run", paths)
+        self.assertIn("/api/v1/jobs/{jobId}/retry", paths)
+        self.assertIn("/api/v1/jobs/{jobId}/cancel", paths)
+        self.assertIn("/api/v1/instructions/{instructionId}", paths)
         self.assertIn("/api/v1/internal/jobs/{jobId}/status", paths)
 
         self.assertEqual(set(paths["/api/v1/projects"]["post"]["responses"].keys()), {"201", "401"})
@@ -83,6 +87,10 @@ class AuthApiTests(_SettingsEnvCase):
         )
         self.assertEqual(set(paths["/api/v1/jobs/{jobId}"]["get"]["responses"].keys()), {"200", "404"})
         self.assertEqual(
+            set(paths["/api/v1/jobs/{jobId}/transcript"]["get"]["responses"].keys()),
+            {"200", "404", "409"},
+        )
+        self.assertEqual(
             set(paths["/api/v1/jobs/{jobId}/confirm-upload"]["post"]["responses"].keys()),
             {"200", "404", "409"},
         )
@@ -91,9 +99,50 @@ class AuthApiTests(_SettingsEnvCase):
             {"200", "202", "404", "409", "502"},
         )
         self.assertEqual(
+            set(paths["/api/v1/jobs/{jobId}/retry"]["post"]["responses"].keys()),
+            {"200", "202", "404", "409", "502"},
+        )
+        self.assertEqual(
+            set(paths["/api/v1/jobs/{jobId}/cancel"]["post"]["responses"].keys()),
+            {"200", "404", "409"},
+        )
+        self.assertEqual(
+            set(paths["/api/v1/instructions/{instructionId}"]["get"]["responses"].keys()),
+            {"200", "404"},
+        )
+        self.assertEqual(
+            set(paths["/api/v1/instructions/{instructionId}"]["put"]["responses"].keys()),
+            {"200", "404", "409"},
+        )
+        self.assertEqual(
             paths["/api/v1/jobs/{jobId}"]["get"]["responses"]["404"]["content"]["application/json"]["schema"]["$ref"],
             "#/components/schemas/NoLeakNotFoundError",
         )
+        self.assertEqual(
+            paths["/api/v1/jobs/{jobId}/transcript"]["get"]["responses"]["200"]["content"]["application/json"]["schema"][
+                "$ref"
+            ],
+            "#/components/schemas/TranscriptPage",
+        )
+        self.assertEqual(
+            paths["/api/v1/jobs/{jobId}/transcript"]["get"]["responses"]["404"]["content"]["application/json"]["schema"][
+                "$ref"
+            ],
+            "#/components/schemas/NoLeakNotFoundError",
+        )
+        self.assertEqual(
+            paths["/api/v1/jobs/{jobId}/transcript"]["get"]["responses"]["409"]["content"]["application/json"]["schema"][
+                "$ref"
+            ],
+            "#/components/schemas/Error",
+        )
+        transcript_parameters = paths["/api/v1/jobs/{jobId}/transcript"]["get"]["parameters"]
+        limit_parameter = next(item for item in transcript_parameters if item["name"] == "limit")
+        self.assertEqual(limit_parameter["schema"]["default"], 200)
+        self.assertEqual(limit_parameter["schema"]["minimum"], 1)
+        self.assertEqual(limit_parameter["schema"]["maximum"], 500)
+        cursor_parameter = next(item for item in transcript_parameters if item["name"] == "cursor")
+        self.assertEqual(cursor_parameter["schema"]["type"], "string")
         self.assertEqual(
             paths["/api/v1/jobs/{jobId}/confirm-upload"]["post"]["responses"]["409"]["content"]["application/json"]["schema"]["oneOf"],
             [
@@ -109,6 +158,67 @@ class AuthApiTests(_SettingsEnvCase):
             paths["/api/v1/jobs/{jobId}/run"]["post"]["responses"]["502"]["content"]["application/json"]["schema"]["$ref"],
             "#/components/schemas/UpstreamDispatchError",
         )
+        self.assertEqual(
+            paths["/api/v1/jobs/{jobId}/retry"]["post"]["responses"]["409"]["content"]["application/json"]["schema"]["$ref"],
+            "#/components/schemas/RetryStateConflictError",
+        )
+        self.assertEqual(
+            paths["/api/v1/jobs/{jobId}/retry"]["post"]["responses"]["502"]["content"]["application/json"]["schema"]["$ref"],
+            "#/components/schemas/UpstreamDispatchError",
+        )
+        self.assertEqual(
+            paths["/api/v1/jobs/{jobId}/cancel"]["post"]["responses"]["409"]["content"]["application/json"]["schema"]["$ref"],
+            "#/components/schemas/FsmTransitionError",
+        )
+        self.assertEqual(
+            paths["/api/v1/instructions/{instructionId}"]["get"]["responses"]["200"]["content"]["application/json"][
+                "schema"
+            ]["$ref"],
+            "#/components/schemas/Instruction",
+        )
+        self.assertEqual(
+            paths["/api/v1/instructions/{instructionId}"]["get"]["responses"]["404"]["content"]["application/json"][
+                "schema"
+            ]["$ref"],
+            "#/components/schemas/NoLeakNotFoundError",
+        )
+        self.assertEqual(
+            paths["/api/v1/instructions/{instructionId}"]["put"]["responses"]["200"]["content"]["application/json"][
+                "schema"
+            ]["$ref"],
+            "#/components/schemas/Instruction",
+        )
+        self.assertEqual(
+            paths["/api/v1/instructions/{instructionId}"]["put"]["responses"]["404"]["content"]["application/json"][
+                "schema"
+            ]["$ref"],
+            "#/components/schemas/NoLeakNotFoundError",
+        )
+        self.assertEqual(
+            paths["/api/v1/instructions/{instructionId}"]["put"]["responses"]["409"]["content"]["application/json"][
+                "schema"
+            ]["$ref"],
+            "#/components/schemas/VersionConflictError",
+        )
+        self.assertEqual(
+            paths["/api/v1/instructions/{instructionId}"]["put"]["requestBody"]["content"]["application/json"]["schema"][
+                "$ref"
+            ],
+            "#/components/schemas/UpdateInstructionRequest",
+        )
+        instruction_parameters = paths["/api/v1/instructions/{instructionId}"]["get"]["parameters"]
+        version_parameter = next(item for item in instruction_parameters if item["name"] == "version")
+        self.assertEqual(version_parameter["schema"]["type"], "integer")
+        self.assertEqual(version_parameter["schema"]["minimum"], 1)
+        instruction_schema = response.json()["components"]["schemas"]["Instruction"]
+        instruction_id_alias = instruction_schema["properties"]["id"]
+        self.assertEqual(instruction_id_alias["type"], "string")
+        self.assertTrue(instruction_id_alias["deprecated"])
+        self.assertEqual(instruction_id_alias["description"], "Deprecated alias of instruction_id.")
+        self.assertNotIn("id", instruction_schema["required"])
+        update_instruction_schema = response.json()["components"]["schemas"]["UpdateInstructionRequest"]
+        self.assertEqual(set(update_instruction_schema["required"]), {"base_version", "markdown"})
+        self.assertEqual(update_instruction_schema["properties"]["base_version"]["minimum"], 1)
         self.assertEqual(
             set(paths["/api/v1/internal/jobs/{jobId}/status"]["post"]["responses"].keys()),
             {"200", "204", "401", "404", "409"},

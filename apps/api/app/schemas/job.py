@@ -41,6 +41,18 @@ class Job(BaseModel):
     updated_at: datetime | None = None
 
 
+class TranscriptSegment(BaseModel):
+    start_ms: int
+    end_ms: int
+    text: str
+
+
+class TranscriptPage(BaseModel):
+    items: list[TranscriptSegment]
+    limit: int
+    next_cursor: str | None = None
+
+
 class ConfirmUploadRequest(BaseModel):
     video_uri: str
 
@@ -53,5 +65,20 @@ class ConfirmUploadResponse(BaseModel):
 class RunJobResponse(BaseModel):
     job_id: str
     status: JobStatus
+    dispatch_id: str
+    replayed: bool
+
+
+class RetryJobRequest(BaseModel):
+    model_profile: str
+    client_request_id: str
+
+
+class RetryJobResponse(BaseModel):
+    job_id: str
+    status: JobStatus
+    resume_from_status: JobStatus
+    checkpoint_ref: str
+    model_profile: str
     dispatch_id: str
     replayed: bool

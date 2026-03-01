@@ -56,14 +56,14 @@ development_status:
   3-2-validate-callback-contract-idempotency-and-ordering-policy: done
   3-3-transactional-consistency-for-state-manifest-and-failure-metadata: done
   3-4-emit-auditable-status-transition-events: done
-  3-5-cancel-running-job-via-fsm-governed-rules: backlog
-  3-6-retry-failed-job-from-checkpoint-with-policy-bound-model-profile: backlog
+  3-5-cancel-running-job-via-fsm-governed-rules: done
+  3-6-retry-failed-job-from-checkpoint-with-policy-bound-model-profile: done
   epic-3-retrospective: optional
-  epic-4: backlog
-  4-1-retrieve-transcript-segments-for-job: backlog
-  4-2-retrieve-instruction-content-by-id: backlog
-  4-3-update-instruction-markdown-with-versioning-and-concurrency-control: backlog
-  4-4-structural-validation-on-create-and-update-with-persisted-result: backlog
+  epic-4: in-progress
+  4-1-retrieve-transcript-segments-for-job: done
+  4-2-retrieve-instruction-content-by-id: done
+  4-3-update-instruction-markdown-with-versioning-and-concurrency-control: done
+  4-4-structural-validation-on-create-and-update-with-persisted-result: ready-for-dev
   4-5-request-targeted-regeneration-with-idempotency-and-provenance: backlog
   4-6-poll-regenerate-task-status-with-sanitized-outcomes: backlog
   epic-4-retrospective: optional

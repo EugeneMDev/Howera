@@ -21,6 +21,7 @@ from app.core.logging_safety import safe_log_identifier
 from app.errors import ApiError
 from app.repositories.memory import InMemoryStore
 from app.schemas.auth import AuthPrincipal
+from app.services.instructions import InstructionService
 from app.services.jobs import JobService
 from app.services.internal_callbacks import InternalCallbackService
 from app.services.projects import ProjectService
@@ -51,6 +52,10 @@ def _request_correlation_id(request: Request) -> str:
     generated = f"req-{uuid4()}"
     request.state.correlation_id = generated
     return generated
+
+
+def get_request_correlation_id(request: Request) -> str:
+    return _request_correlation_id(request)
 
 
 def get_token_verifier(settings: Annotated[Settings, Depends(get_settings)]) -> TokenVerifier:
@@ -132,6 +137,10 @@ def get_project_service(store: Annotated[InMemoryStore, Depends(get_store)]) -> 
 
 def get_job_service(store: Annotated[InMemoryStore, Depends(get_store)]) -> JobService:
     return JobService(store)
+
+
+def get_instruction_service(store: Annotated[InMemoryStore, Depends(get_store)]) -> InstructionService:
+    return InstructionService(store)
 
 
 def get_internal_callback_service(

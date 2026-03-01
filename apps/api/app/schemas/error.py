@@ -15,6 +15,12 @@ class ErrorResponse(BaseModel):
     details: dict[str, Any] | None = None
 
 
+class Error(BaseModel):
+    code: str
+    message: str
+    details: dict[str, Any] | None = None
+
+
 class TransitionErrorDetails(BaseModel):
     current_status: JobStatus
     attempted_status: JobStatus
@@ -36,6 +42,17 @@ class VideoUriConflictError(BaseModel):
     code: Literal["VIDEO_URI_CONFLICT"]
     message: str
     details: VideoUriConflictErrorDetails
+
+
+class VersionConflictErrorDetails(BaseModel):
+    base_version: int
+    current_version: int
+
+
+class VersionConflictError(BaseModel):
+    code: Literal["VERSION_CONFLICT"]
+    message: str
+    details: VersionConflictErrorDetails
 
 
 class CallbackOrderingErrorDetails(BaseModel):
@@ -69,3 +86,14 @@ class UpstreamDispatchError(BaseModel):
     code: Literal["ORCHESTRATOR_DISPATCH_FAILED"]
     message: str
     details: dict[str, Any] | None = None
+
+
+class RetryStateConflictErrorDetails(BaseModel):
+    current_status: JobStatus
+    attempted_status: JobStatus | None = None
+
+
+class RetryStateConflictError(BaseModel):
+    code: Literal["RETRY_NOT_ALLOWED_STATE", "JOB_ALREADY_RUNNING"]
+    message: str
+    details: RetryStateConflictErrorDetails

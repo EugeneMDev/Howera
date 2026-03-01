@@ -13,7 +13,8 @@ from app.core.config import get_settings
 from app.main import create_app
 from app.routes.dependencies import get_internal_callback_service
 from app.schemas.internal import StatusCallbackRequest
-from app.schemas.job import ArtifactManifest, JobStatus
+from app.schemas.job import ArtifactManifest, JobStatus, TranscriptSegment
+from app.services.jobs import JobService
 
 
 class _SettingsEnvCase(unittest.TestCase):
@@ -42,6 +43,44 @@ class _SettingsEnvCase(unittest.TestCase):
 
 
 class CallbackTransactionTests(_SettingsEnvCase):
+    def test_callback_can_progress_job_after_retry_acceptance(self) -> None:
+        app = create_app()
+        client = TestClient(app)
+        store = app.state.store
+        service = JobService(store)
+        project = store.create_project(owner_id="owner-1", name="Project")
+        job = service.create_job(owner_id="owner-1", project_id=project.id)
+        service.confirm_upload(owner_id="owner-1", job_id=job.id, video_uri="s3://bucket/video-retry.mp4")
+        service.run_job(owner_id="owner-1", job_id=job.id)
+        store.jobs[job.id].status = JobStatus.FAILED
+
+        retry_result = service.retry_job(
+            owner_id="owner-1",
+            job_id=job.id,
+            model_profile="cloud-default",
+            client_request_id="retry-callback-progress-1",
+        )
+        self.assertEqual(retry_result.status, JobStatus.FAILED)
+        self.assertEqual(retry_result.resume_from_status, JobStatus.UPLOADED)
+
+        response = client.post(
+            f"/api/v1/internal/jobs/{job.id}/status",
+            headers={"X-Callback-Secret": "test-callback-secret"},
+            json={
+                "event_id": "evt-retry-progress-1",
+                "status": "AUDIO_EXTRACTING",
+                "occurred_at": "2026-02-27T03:10:00Z",
+                "correlation_id": "corr-retry-progress-1",
+            },
+        )
+
+        self.assertEqual(response.status_code, 204)
+        updated_job = store.jobs[job.id]
+        self.assertEqual(updated_job.status, JobStatus.AUDIO_EXTRACTING)
+        self.assertEqual(len(store.transition_audit_events), 1)
+        self.assertEqual(store.transition_audit_events[0].prev_status, JobStatus.FAILED)
+        self.assertEqual(store.transition_audit_events[0].new_status, JobStatus.AUDIO_EXTRACTING)
+
     def test_callback_applies_transactional_status_manifest_and_failure_updates(self) -> None:
         app = create_app()
         client = TestClient(app)
@@ -194,6 +233,10 @@ class CallbackTransactionTests(_SettingsEnvCase):
                 store.jobs[job.id].failure_code = "OLD_CODE"
                 store.jobs[job.id].failure_message = "old message"
                 store.jobs[job.id].failed_stage = "OLD_STAGE"
+                store.set_transcript_segments_for_job(
+                    job_id=job.id,
+                    segments=[TranscriptSegment(start_ms=0, end_ms=250, text="old")],
+                )
 
                 before_job = store.jobs[job.id]
                 before_status = before_job.status
@@ -202,6 +245,9 @@ class CallbackTransactionTests(_SettingsEnvCase):
                 before_failure_code = before_job.failure_code
                 before_failure_message = before_job.failure_message
                 before_failed_stage = before_job.failed_stage
+                before_transcript_segments = [
+                    segment.model_dump() for segment in store.list_transcript_segments_for_job(job_id=job.id)
+                ]
                 before_job_write_count = store.job_write_count
                 before_callback_count = len(store.callback_events)
                 before_audit_count = len(store.transition_audit_events)
@@ -217,7 +263,10 @@ class CallbackTransactionTests(_SettingsEnvCase):
                     event_id=event_id,
                     status=JobStatus.UPLOADING,
                     occurred_at=datetime(2026, 2, 27, 0, 10, tzinfo=UTC),
-                    artifact_updates={"draft_uri": "s3://bucket/draft-b.md"},
+                    artifact_updates={
+                        "draft_uri": "s3://bucket/draft-b.md",
+                        "transcript_segments": [{"start_ms": 300, "end_ms": 600, "text": "new"}],
+                    },
                     failure_code="NEW_CODE",
                     failure_message="new message",
                     failed_stage="NEW_STAGE",
@@ -237,6 +286,10 @@ class CallbackTransactionTests(_SettingsEnvCase):
                 self.assertEqual(rolled_back_job.failure_code, before_failure_code)
                 self.assertEqual(rolled_back_job.failure_message, before_failure_message)
                 self.assertEqual(rolled_back_job.failed_stage, before_failed_stage)
+                self.assertEqual(
+                    [segment.model_dump() for segment in store.list_transcript_segments_for_job(job_id=job.id)],
+                    before_transcript_segments,
+                )
                 self.assertEqual(store.job_write_count, before_job_write_count)
                 self.assertEqual(len(store.callback_events), before_callback_count)
                 self.assertEqual(len(store.transition_audit_events), before_audit_count)

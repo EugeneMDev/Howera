@@ -75,7 +75,18 @@ class AuthApiTests(_SettingsEnvCase):
         self.assertIn("/api/v1/jobs/{jobId}/run", paths)
         self.assertIn("/api/v1/jobs/{jobId}/retry", paths)
         self.assertIn("/api/v1/jobs/{jobId}/cancel", paths)
+        self.assertIn("/api/v1/jobs/{jobId}/screenshots/extract", paths)
+        self.assertIn("/api/v1/jobs/{jobId}/screenshots/uploads", paths)
+        self.assertIn("/api/v1/jobs/{jobId}/screenshots/uploads/{uploadId}/confirm", paths)
+        self.assertIn("/api/v1/instructions/{instructionId}/anchors", paths)
+        self.assertIn("/api/v1/anchors/{anchorId}", paths)
+        self.assertIn("/api/v1/anchors/{anchorId}/attach-upload", paths)
+        self.assertIn("/api/v1/anchors/{anchorId}/replace", paths)
+        self.assertIn("/api/v1/anchors/{anchorId}/assets/{assetId}", paths)
+        self.assertIn("/api/v1/screenshot-tasks/{taskId}", paths)
         self.assertIn("/api/v1/instructions/{instructionId}", paths)
+        self.assertIn("/api/v1/instructions/{instructionId}/regenerate", paths)
+        self.assertIn("/api/v1/tasks/{taskId}", paths)
         self.assertIn("/api/v1/internal/jobs/{jobId}/status", paths)
 
         self.assertEqual(set(paths["/api/v1/projects"]["post"]["responses"].keys()), {"201", "401"})
@@ -107,12 +118,64 @@ class AuthApiTests(_SettingsEnvCase):
             {"200", "404", "409"},
         )
         self.assertEqual(
+            set(paths["/api/v1/jobs/{jobId}/screenshots/extract"]["post"]["responses"].keys()),
+            {"200", "202", "400", "404"},
+        )
+        self.assertEqual(
+            set(paths["/api/v1/jobs/{jobId}/screenshots/uploads"]["post"]["responses"].keys()),
+            {"201", "404"},
+        )
+        self.assertEqual(
+            set(paths["/api/v1/jobs/{jobId}/screenshots/uploads/{uploadId}/confirm"]["post"]["responses"].keys()),
+            {"200", "404"},
+        )
+        self.assertEqual(
+            set(paths["/api/v1/instructions/{instructionId}/anchors"]["post"]["responses"].keys()),
+            {"201", "404"},
+        )
+        self.assertEqual(
+            set(paths["/api/v1/instructions/{instructionId}/anchors"]["get"]["responses"].keys()),
+            {"200", "404"},
+        )
+        self.assertEqual(
+            set(paths["/api/v1/anchors/{anchorId}"]["get"]["responses"].keys()),
+            {"200", "404"},
+        )
+        self.assertEqual(
+            set(paths["/api/v1/anchors/{anchorId}/attach-upload"]["post"]["responses"].keys()),
+            {"200", "404"},
+        )
+        self.assertEqual(
+            set(paths["/api/v1/anchors/{anchorId}/annotations"]["post"]["responses"].keys()),
+            {"200", "400", "404"},
+        )
+        self.assertEqual(
+            set(paths["/api/v1/anchors/{anchorId}/replace"]["post"]["responses"].keys()),
+            {"200", "202", "400", "404"},
+        )
+        self.assertEqual(
+            set(paths["/api/v1/anchors/{anchorId}/assets/{assetId}"]["delete"]["responses"].keys()),
+            {"200", "404"},
+        )
+        self.assertEqual(
+            set(paths["/api/v1/screenshot-tasks/{taskId}"]["get"]["responses"].keys()),
+            {"200", "404"},
+        )
+        self.assertEqual(
             set(paths["/api/v1/instructions/{instructionId}"]["get"]["responses"].keys()),
             {"200", "404"},
         )
         self.assertEqual(
             set(paths["/api/v1/instructions/{instructionId}"]["put"]["responses"].keys()),
             {"200", "404", "409"},
+        )
+        self.assertEqual(
+            set(paths["/api/v1/instructions/{instructionId}/regenerate"]["post"]["responses"].keys()),
+            {"200", "202", "400", "404", "409"},
+        )
+        self.assertEqual(
+            set(paths["/api/v1/tasks/{taskId}"]["get"]["responses"].keys()),
+            {"200", "404"},
         )
         self.assertEqual(
             paths["/api/v1/jobs/{jobId}"]["get"]["responses"]["404"]["content"]["application/json"]["schema"]["$ref"],
@@ -171,6 +234,229 @@ class AuthApiTests(_SettingsEnvCase):
             "#/components/schemas/FsmTransitionError",
         )
         self.assertEqual(
+            paths["/api/v1/jobs/{jobId}/screenshots/extract"]["post"]["requestBody"]["content"]["application/json"][
+                "schema"
+            ]["$ref"],
+            "#/components/schemas/ScreenshotExtractionRequest",
+        )
+        self.assertEqual(
+            paths["/api/v1/jobs/{jobId}/screenshots/extract"]["post"]["responses"]["200"]["content"][
+                "application/json"
+            ]["schema"]["$ref"],
+            "#/components/schemas/ScreenshotTask",
+        )
+        self.assertEqual(
+            paths["/api/v1/jobs/{jobId}/screenshots/extract"]["post"]["responses"]["202"]["content"][
+                "application/json"
+            ]["schema"]["$ref"],
+            "#/components/schemas/ScreenshotTask",
+        )
+        self.assertEqual(
+            paths["/api/v1/jobs/{jobId}/screenshots/extract"]["post"]["responses"]["400"]["content"][
+                "application/json"
+            ]["schema"]["$ref"],
+            "#/components/schemas/Error",
+        )
+        self.assertEqual(
+            paths["/api/v1/jobs/{jobId}/screenshots/extract"]["post"]["responses"]["404"]["content"][
+                "application/json"
+            ]["schema"]["$ref"],
+            "#/components/schemas/NoLeakNotFoundError",
+        )
+        self.assertEqual(
+            paths["/api/v1/jobs/{jobId}/screenshots/uploads"]["post"]["requestBody"]["content"]["application/json"][
+                "schema"
+            ]["$ref"],
+            "#/components/schemas/CreateCustomUploadRequest",
+        )
+        self.assertEqual(
+            paths["/api/v1/jobs/{jobId}/screenshots/uploads"]["post"]["responses"]["201"]["content"][
+                "application/json"
+            ]["schema"]["$ref"],
+            "#/components/schemas/CustomUploadTicket",
+        )
+        self.assertEqual(
+            paths["/api/v1/jobs/{jobId}/screenshots/uploads"]["post"]["responses"]["404"]["content"][
+                "application/json"
+            ]["schema"]["$ref"],
+            "#/components/schemas/NoLeakNotFoundError",
+        )
+        self.assertEqual(
+            paths["/api/v1/jobs/{jobId}/screenshots/uploads/{uploadId}/confirm"]["post"]["requestBody"]["content"][
+                "application/json"
+            ]["schema"]["$ref"],
+            "#/components/schemas/ConfirmCustomUploadRequest",
+        )
+        self.assertEqual(
+            paths["/api/v1/jobs/{jobId}/screenshots/uploads/{uploadId}/confirm"]["post"]["responses"]["200"]["content"][
+                "application/json"
+            ]["schema"]["$ref"],
+            "#/components/schemas/ConfirmCustomUploadResponse",
+        )
+        self.assertEqual(
+            paths["/api/v1/jobs/{jobId}/screenshots/uploads/{uploadId}/confirm"]["post"]["responses"]["404"]["content"][
+                "application/json"
+            ]["schema"]["$ref"],
+            "#/components/schemas/NoLeakNotFoundError",
+        )
+        self.assertEqual(
+            paths["/api/v1/instructions/{instructionId}/anchors"]["post"]["requestBody"]["content"]["application/json"][
+                "schema"
+            ]["$ref"],
+            "#/components/schemas/ScreenshotAnchorCreateRequest",
+        )
+        self.assertEqual(
+            paths["/api/v1/instructions/{instructionId}/anchors"]["post"]["responses"]["201"]["content"][
+                "application/json"
+            ]["schema"]["$ref"],
+            "#/components/schemas/ScreenshotAnchor",
+        )
+        self.assertEqual(
+            paths["/api/v1/instructions/{instructionId}/anchors"]["post"]["responses"]["404"]["content"][
+                "application/json"
+            ]["schema"]["$ref"],
+            "#/components/schemas/NoLeakNotFoundError",
+        )
+        anchor_list_parameters = paths["/api/v1/instructions/{instructionId}/anchors"]["get"]["parameters"]
+        instruction_version_parameter = next(
+            item for item in anchor_list_parameters if item["name"] == "instruction_version_id"
+        )
+        self.assertEqual(instruction_version_parameter["schema"]["type"], "string")
+        include_deleted_parameter = next(item for item in anchor_list_parameters if item["name"] == "include_deleted_assets")
+        self.assertEqual(include_deleted_parameter["schema"]["type"], "boolean")
+        self.assertEqual(include_deleted_parameter["schema"]["default"], False)
+        self.assertEqual(
+            paths["/api/v1/instructions/{instructionId}/anchors"]["get"]["responses"]["200"]["content"][
+                "application/json"
+            ]["schema"]["type"],
+            "array",
+        )
+        self.assertEqual(
+            paths["/api/v1/instructions/{instructionId}/anchors"]["get"]["responses"]["200"]["content"][
+                "application/json"
+            ]["schema"]["items"]["$ref"],
+            "#/components/schemas/ScreenshotAnchor",
+        )
+        self.assertEqual(
+            paths["/api/v1/instructions/{instructionId}/anchors"]["get"]["responses"]["404"]["content"][
+                "application/json"
+            ]["schema"]["$ref"],
+            "#/components/schemas/NoLeakNotFoundError",
+        )
+        anchor_parameters = paths["/api/v1/anchors/{anchorId}"]["get"]["parameters"]
+        target_version_parameter = next(
+            item for item in anchor_parameters if item["name"] == "target_instruction_version_id"
+        )
+        self.assertEqual(target_version_parameter["schema"]["type"], "string")
+        self.assertEqual(
+            paths["/api/v1/anchors/{anchorId}"]["get"]["responses"]["200"]["content"]["application/json"]["schema"][
+                "$ref"
+            ],
+            "#/components/schemas/ScreenshotAnchor",
+        )
+        self.assertEqual(
+            paths["/api/v1/anchors/{anchorId}"]["get"]["responses"]["404"]["content"]["application/json"]["schema"][
+                "$ref"
+            ],
+            "#/components/schemas/NoLeakNotFoundError",
+        )
+        self.assertEqual(
+            paths["/api/v1/anchors/{anchorId}/attach-upload"]["post"]["requestBody"]["content"]["application/json"][
+                "schema"
+            ]["$ref"],
+            "#/components/schemas/AttachUploadedAssetRequest",
+        )
+        self.assertEqual(
+            paths["/api/v1/anchors/{anchorId}/attach-upload"]["post"]["responses"]["200"]["content"][
+                "application/json"
+            ]["schema"]["$ref"],
+            "#/components/schemas/ScreenshotAnchor",
+        )
+        self.assertEqual(
+            paths["/api/v1/anchors/{anchorId}/attach-upload"]["post"]["responses"]["404"]["content"][
+                "application/json"
+            ]["schema"]["$ref"],
+            "#/components/schemas/NoLeakNotFoundError",
+        )
+        self.assertEqual(
+            paths["/api/v1/anchors/{anchorId}/annotations"]["post"]["requestBody"]["content"]["application/json"][
+                "schema"
+            ]["$ref"],
+            "#/components/schemas/AnnotateScreenshotRequest",
+        )
+        self.assertEqual(
+            paths["/api/v1/anchors/{anchorId}/annotations"]["post"]["responses"]["200"]["content"][
+                "application/json"
+            ]["schema"]["$ref"],
+            "#/components/schemas/AnnotateScreenshotResponse",
+        )
+        self.assertEqual(
+            paths["/api/v1/anchors/{anchorId}/annotations"]["post"]["responses"]["400"]["content"][
+                "application/json"
+            ]["schema"]["$ref"],
+            "#/components/schemas/Error",
+        )
+        self.assertEqual(
+            paths["/api/v1/anchors/{anchorId}/annotations"]["post"]["responses"]["404"]["content"][
+                "application/json"
+            ]["schema"]["$ref"],
+            "#/components/schemas/NoLeakNotFoundError",
+        )
+        self.assertEqual(
+            paths["/api/v1/anchors/{anchorId}/replace"]["post"]["requestBody"]["content"]["application/json"][
+                "schema"
+            ]["$ref"],
+            "#/components/schemas/ScreenshotReplaceRequest",
+        )
+        self.assertEqual(
+            paths["/api/v1/anchors/{anchorId}/replace"]["post"]["responses"]["200"]["content"]["application/json"][
+                "schema"
+            ]["$ref"],
+            "#/components/schemas/ScreenshotTask",
+        )
+        self.assertEqual(
+            paths["/api/v1/anchors/{anchorId}/replace"]["post"]["responses"]["202"]["content"]["application/json"][
+                "schema"
+            ]["$ref"],
+            "#/components/schemas/ScreenshotTask",
+        )
+        self.assertEqual(
+            paths["/api/v1/anchors/{anchorId}/replace"]["post"]["responses"]["400"]["content"]["application/json"][
+                "schema"
+            ]["$ref"],
+            "#/components/schemas/Error",
+        )
+        self.assertEqual(
+            paths["/api/v1/anchors/{anchorId}/replace"]["post"]["responses"]["404"]["content"]["application/json"][
+                "schema"
+            ]["$ref"],
+            "#/components/schemas/NoLeakNotFoundError",
+        )
+        self.assertEqual(
+            paths["/api/v1/anchors/{anchorId}/assets/{assetId}"]["delete"]["responses"]["200"]["content"][
+                "application/json"
+            ]["schema"]["$ref"],
+            "#/components/schemas/SoftDeleteScreenshotAssetResponse",
+        )
+        self.assertEqual(
+            paths["/api/v1/anchors/{anchorId}/assets/{assetId}"]["delete"]["responses"]["404"]["content"][
+                "application/json"
+            ]["schema"]["$ref"],
+            "#/components/schemas/NoLeakNotFoundError",
+        )
+        self.assertEqual(
+            paths["/api/v1/screenshot-tasks/{taskId}"]["get"]["responses"]["200"]["content"]["application/json"][
+                "schema"
+            ]["$ref"],
+            "#/components/schemas/ScreenshotTask",
+        )
+        self.assertEqual(
+            paths["/api/v1/screenshot-tasks/{taskId}"]["get"]["responses"]["404"]["content"]["application/json"][
+                "schema"
+            ]["$ref"],
+            "#/components/schemas/NoLeakNotFoundError",
+        )
+        self.assertEqual(
             paths["/api/v1/instructions/{instructionId}"]["get"]["responses"]["200"]["content"]["application/json"][
                 "schema"
             ]["$ref"],
@@ -205,6 +491,219 @@ class AuthApiTests(_SettingsEnvCase):
                 "$ref"
             ],
             "#/components/schemas/UpdateInstructionRequest",
+        )
+        self.assertEqual(
+            paths["/api/v1/instructions/{instructionId}/regenerate"]["post"]["requestBody"]["content"][
+                "application/json"
+            ]["schema"]["$ref"],
+            "#/components/schemas/RegenerateRequest",
+        )
+        self.assertEqual(
+            paths["/api/v1/instructions/{instructionId}/regenerate"]["post"]["responses"]["200"]["content"][
+                "application/json"
+            ]["schema"]["$ref"],
+            "#/components/schemas/RegenerateTask",
+        )
+        self.assertEqual(
+            paths["/api/v1/instructions/{instructionId}/regenerate"]["post"]["responses"]["202"]["content"][
+                "application/json"
+            ]["schema"]["$ref"],
+            "#/components/schemas/RegenerateTask",
+        )
+        self.assertEqual(
+            paths["/api/v1/instructions/{instructionId}/regenerate"]["post"]["responses"]["400"]["content"][
+                "application/json"
+            ]["schema"]["$ref"],
+            "#/components/schemas/Error",
+        )
+        self.assertEqual(
+            paths["/api/v1/instructions/{instructionId}/regenerate"]["post"]["responses"]["404"]["content"][
+                "application/json"
+            ]["schema"]["$ref"],
+            "#/components/schemas/NoLeakNotFoundError",
+        )
+        self.assertEqual(
+            paths["/api/v1/instructions/{instructionId}/regenerate"]["post"]["responses"]["409"]["content"][
+                "application/json"
+            ]["schema"]["$ref"],
+            "#/components/schemas/VersionConflictError",
+        )
+        self.assertEqual(
+            paths["/api/v1/tasks/{taskId}"]["get"]["responses"]["200"]["content"]["application/json"]["schema"]["$ref"],
+            "#/components/schemas/RegenerateTask",
+        )
+        self.assertEqual(
+            paths["/api/v1/tasks/{taskId}"]["get"]["responses"]["404"]["content"]["application/json"]["schema"]["$ref"],
+            "#/components/schemas/NoLeakNotFoundError",
+        )
+        regenerate_request_schema = response.json()["components"]["schemas"]["RegenerateRequest"]
+        self.assertEqual(set(regenerate_request_schema["required"]), {"base_version", "selection", "client_request_id"})
+        self.assertEqual(regenerate_request_schema["properties"]["base_version"]["minimum"], 1)
+        self.assertEqual(
+            regenerate_request_schema["properties"]["selection"]["$ref"],
+            "#/components/schemas/RegenerateSelection",
+        )
+        regenerate_selection_schema = response.json()["components"]["schemas"]["RegenerateSelection"]
+        selection_variants = regenerate_selection_schema["oneOf"]
+        self.assertEqual(len(selection_variants), 2)
+        self.assertEqual(selection_variants[0]["required"], ["block_id"])
+        self.assertEqual(selection_variants[1]["required"], ["char_range"])
+        regenerate_status_schema = response.json()["components"]["schemas"]["RegenerateTaskStatus"]
+        self.assertEqual(regenerate_status_schema["enum"], ["PENDING", "RUNNING", "SUCCEEDED", "FAILED"])
+        screenshot_task_schema = response.json()["components"]["schemas"]["ScreenshotTask"]
+        self.assertEqual(set(screenshot_task_schema["required"]), {"task_id", "status", "operation"})
+        screenshot_operation_schema = response.json()["components"]["schemas"]["ScreenshotOperation"]
+        self.assertEqual(screenshot_operation_schema["enum"], ["extract", "replace"])
+        screenshot_task_status_schema = response.json()["components"]["schemas"]["ScreenshotTaskStatus"]
+        self.assertEqual(screenshot_task_status_schema["enum"], ["PENDING", "RUNNING", "SUCCEEDED", "FAILED"])
+        screenshot_request_schema = response.json()["components"]["schemas"]["ScreenshotExtractionRequest"]
+        self.assertEqual(
+            set(screenshot_request_schema["required"]),
+            {"instruction_id", "instruction_version_id", "timestamp_ms"},
+        )
+        self.assertEqual(screenshot_request_schema["properties"]["offset_ms"]["default"], 0)
+        self.assertEqual(screenshot_request_schema["properties"]["strategy"]["default"], "precise")
+        self.assertEqual(screenshot_request_schema["properties"]["format"]["default"], "png")
+        self.assertEqual(
+            screenshot_request_schema["properties"]["char_range"]["$ref"],
+            "#/components/schemas/CharRange",
+        )
+        screenshot_replace_schema = response.json()["components"]["schemas"]["ScreenshotReplaceRequest"]
+        self.assertEqual(
+            set(screenshot_replace_schema["required"]),
+            {"instruction_version_id", "timestamp_ms"},
+        )
+        self.assertEqual(screenshot_replace_schema["properties"]["offset_ms"]["default"], 0)
+        self.assertEqual(screenshot_replace_schema["properties"]["strategy"]["default"], "precise")
+        self.assertEqual(screenshot_replace_schema["properties"]["format"]["default"], "png")
+        screenshot_anchor_create_schema = response.json()["components"]["schemas"]["ScreenshotAnchorCreateRequest"]
+        self.assertEqual(
+            set(screenshot_anchor_create_schema["required"]),
+            {"instruction_version_id", "addressing"},
+        )
+        self.assertEqual(
+            screenshot_anchor_create_schema["properties"]["addressing"]["$ref"],
+            "#/components/schemas/AnchorAddress",
+        )
+        anchor_address_schema = response.json()["components"]["schemas"]["AnchorAddress"]
+        self.assertEqual(anchor_address_schema["properties"]["address_type"]["$ref"], "#/components/schemas/AnchorAddressType")
+        self.assertEqual(anchor_address_schema["properties"]["char_range"]["$ref"], "#/components/schemas/CharRange")
+        self.assertEqual(anchor_address_schema["properties"]["strategy"]["type"], "string")
+        self.assertEqual(set(anchor_address_schema["required"]), {"address_type"})
+        anchor_address_type_schema = response.json()["components"]["schemas"]["AnchorAddressType"]
+        self.assertEqual(anchor_address_type_schema["enum"], ["block_id", "char_range"])
+        anchor_resolution_schema = response.json()["components"]["schemas"]["AnchorResolution"]
+        self.assertEqual(
+            set(anchor_resolution_schema["required"]),
+            {"source_instruction_version_id", "target_instruction_version_id", "resolution_state"},
+        )
+        self.assertEqual(anchor_resolution_schema["properties"]["resolution_state"]["$ref"], "#/components/schemas/AnchorResolutionState")
+        self.assertEqual(anchor_resolution_schema["properties"]["trace"]["type"], "object")
+        anchor_resolution_state_schema = response.json()["components"]["schemas"]["AnchorResolutionState"]
+        self.assertEqual(anchor_resolution_state_schema["enum"], ["retain", "remap", "unresolved"])
+        screenshot_anchor_schema = response.json()["components"]["schemas"]["ScreenshotAnchor"]
+        self.assertEqual(screenshot_anchor_schema["properties"]["addressing"]["$ref"], "#/components/schemas/AnchorAddress")
+        self.assertIn(
+            {"$ref": "#/components/schemas/AnchorResolution"},
+            screenshot_anchor_schema["properties"]["resolution"]["anyOf"],
+        )
+        soft_delete_schema = response.json()["components"]["schemas"]["SoftDeleteScreenshotAssetResponse"]
+        self.assertEqual(
+            set(soft_delete_schema["required"]),
+            {"anchor_id", "deleted_asset_id", "active_asset_id"},
+        )
+        create_custom_upload_schema = response.json()["components"]["schemas"]["CreateCustomUploadRequest"]
+        self.assertEqual(
+            set(create_custom_upload_schema["required"]),
+            {"filename", "mime_type", "size_bytes", "checksum_sha256"},
+        )
+        self.assertEqual(
+            create_custom_upload_schema["properties"]["mime_type"]["$ref"],
+            "#/components/schemas/ScreenshotMimeType",
+        )
+        self.assertEqual(create_custom_upload_schema["properties"]["filename"]["minLength"], 1)
+        self.assertEqual(create_custom_upload_schema["properties"]["filename"]["maxLength"], 255)
+        self.assertEqual(create_custom_upload_schema["properties"]["size_bytes"]["minimum"], 1)
+        self.assertEqual(
+            create_custom_upload_schema["properties"]["checksum_sha256"]["pattern"],
+            "^[0-9a-fA-F]{64}$",
+        )
+        custom_upload_ticket_schema = response.json()["components"]["schemas"]["CustomUploadTicket"]
+        self.assertEqual(
+            set(custom_upload_ticket_schema["required"]),
+            {"upload_id", "upload_url", "expires_at", "max_size_bytes", "allowed_mime_types"},
+        )
+        self.assertEqual(
+            custom_upload_ticket_schema["properties"]["allowed_mime_types"]["items"]["$ref"],
+            "#/components/schemas/ScreenshotMimeType",
+        )
+        confirm_custom_upload_schema = response.json()["components"]["schemas"]["ConfirmCustomUploadRequest"]
+        self.assertEqual(
+            set(confirm_custom_upload_schema["required"]),
+            {"mime_type", "size_bytes", "checksum_sha256", "width", "height"},
+        )
+        self.assertEqual(confirm_custom_upload_schema["properties"]["width"]["minimum"], 1)
+        self.assertEqual(confirm_custom_upload_schema["properties"]["height"]["minimum"], 1)
+        self.assertEqual(
+            confirm_custom_upload_schema["properties"]["checksum_sha256"]["pattern"],
+            "^[0-9a-fA-F]{64}$",
+        )
+        attach_uploaded_asset_schema = response.json()["components"]["schemas"]["AttachUploadedAssetRequest"]
+        self.assertEqual(
+            set(attach_uploaded_asset_schema["required"]),
+            {"upload_id", "instruction_version_id"},
+        )
+        annotation_operation_schema = response.json()["components"]["schemas"]["AnnotationOperation"]
+        self.assertEqual(
+            set(annotation_operation_schema["required"]),
+            {"op_type", "geometry", "style"},
+        )
+        self.assertEqual(
+            annotation_operation_schema["properties"]["op_type"]["$ref"],
+            "#/components/schemas/AnnotationOperationType",
+        )
+        self.assertEqual(annotation_operation_schema["properties"]["geometry"]["type"], "object")
+        self.assertEqual(annotation_operation_schema["properties"]["style"]["type"], "object")
+        annotation_operation_type_schema = response.json()["components"]["schemas"]["AnnotationOperationType"]
+        self.assertEqual(annotation_operation_type_schema["enum"], ["blur", "arrow", "marker", "pencil"])
+        annotate_request_schema = response.json()["components"]["schemas"]["AnnotateScreenshotRequest"]
+        self.assertEqual(
+            set(annotate_request_schema["required"]),
+            {"base_asset_id", "operations"},
+        )
+        self.assertEqual(
+            annotate_request_schema["properties"]["operations"]["items"]["$ref"],
+            "#/components/schemas/AnnotationOperation",
+        )
+        self.assertEqual(annotate_request_schema["properties"]["operations"]["minItems"], 1)
+        annotate_response_schema = response.json()["components"]["schemas"]["AnnotateScreenshotResponse"]
+        self.assertEqual(
+            set(annotate_response_schema["required"]),
+            {"anchor_id", "base_asset_id", "ops_hash", "rendered_asset_id", "active_asset_id"},
+        )
+        screenshot_asset_schema = response.json()["components"]["schemas"]["ScreenshotAsset"]
+        self.assertEqual(
+            screenshot_asset_schema["properties"]["kind"]["$ref"],
+            "#/components/schemas/ScreenshotAssetKind",
+        )
+        self.assertEqual(
+            screenshot_asset_schema["properties"]["mime_type"]["$ref"],
+            "#/components/schemas/ScreenshotMimeType",
+        )
+        self.assertEqual(screenshot_asset_schema["properties"]["extraction_key"]["type"], "string")
+        self.assertEqual(screenshot_asset_schema["properties"]["checksum_sha256"]["type"], "string")
+        self.assertEqual(screenshot_asset_schema["properties"]["upload_id"]["type"], "string")
+        self.assertEqual(screenshot_asset_schema["properties"]["ops_hash"]["type"], "string")
+        self.assertEqual(screenshot_asset_schema["properties"]["rendered_from_asset_id"]["type"], "string")
+        screenshot_asset_kind_schema = response.json()["components"]["schemas"]["ScreenshotAssetKind"]
+        self.assertEqual(
+            screenshot_asset_kind_schema["enum"],
+            ["EXTRACTED", "UPLOADED", "ANNOTATED"],
+        )
+        screenshot_mime_type_schema = response.json()["components"]["schemas"]["ScreenshotMimeType"]
+        self.assertEqual(
+            screenshot_mime_type_schema["enum"],
+            ["image/png", "image/jpeg", "image/webp"],
         )
         instruction_parameters = paths["/api/v1/instructions/{instructionId}"]["get"]["parameters"]
         version_parameter = next(item for item in instruction_parameters if item["name"] == "version")

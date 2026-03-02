@@ -29,9 +29,28 @@ _OPENAPI_RESPONSE_CODES: dict[str, dict[str, set[str]]] = {
     "/api/v1/jobs/{jobId}/run": {"post": {"200", "202", "404", "409", "502"}},
     "/api/v1/jobs/{jobId}/retry": {"post": {"200", "202", "404", "409", "502"}},
     "/api/v1/jobs/{jobId}/cancel": {"post": {"200", "404", "409"}},
+    "/api/v1/jobs/{jobId}/screenshots/extract": {"post": {"200", "202", "400", "404"}},
+    "/api/v1/jobs/{jobId}/screenshots/uploads": {"post": {"201", "404"}},
+    "/api/v1/jobs/{jobId}/screenshots/uploads/{uploadId}/confirm": {"post": {"200", "404"}},
+    "/api/v1/instructions/{instructionId}/anchors": {
+        "post": {"201", "404"},
+        "get": {"200", "404"},
+    },
+    "/api/v1/anchors/{anchorId}": {"get": {"200", "404"}},
+    "/api/v1/anchors/{anchorId}/attach-upload": {"post": {"200", "404"}},
+    "/api/v1/anchors/{anchorId}/annotations": {"post": {"200", "400", "404"}},
+    "/api/v1/anchors/{anchorId}/replace": {"post": {"200", "202", "400", "404"}},
+    "/api/v1/anchors/{anchorId}/assets/{assetId}": {"delete": {"200", "404"}},
+    "/api/v1/screenshot-tasks/{taskId}": {"get": {"200", "404"}},
     "/api/v1/instructions/{instructionId}": {
         "get": {"200", "404"},
         "put": {"200", "404", "409"},
+    },
+    "/api/v1/instructions/{instructionId}/regenerate": {
+        "post": {"200", "202", "400", "404", "409"},
+    },
+    "/api/v1/tasks/{taskId}": {
+        "get": {"200", "404"},
     },
     "/api/v1/internal/jobs/{jobId}/status": {"post": {"200", "204", "401", "404", "409"}},
 }
@@ -57,8 +76,36 @@ _INSTRUCTION_VALIDATION_PATHS: set[tuple[str, str]] = {
     ("GET", "/api/v1/instructions/{instructionId}"),
 }
 
+_ANCHOR_LIFECYCLE_VALIDATION_PATHS: set[tuple[str, str]] = {
+    ("POST", "/api/v1/instructions/{instructionId}/anchors"),
+    ("GET", "/api/v1/instructions/{instructionId}/anchors"),
+    ("GET", "/api/v1/anchors/{anchorId}"),
+}
+
 _INSTRUCTION_UPDATE_VALIDATION_PATHS: set[tuple[str, str]] = {
     ("PUT", "/api/v1/instructions/{instructionId}"),
+}
+
+_INSTRUCTION_REGENERATE_VALIDATION_PATHS: set[tuple[str, str]] = {
+    ("POST", "/api/v1/instructions/{instructionId}/regenerate"),
+}
+
+_SCREENSHOT_EXTRACT_VALIDATION_PATHS: set[tuple[str, str]] = {
+    ("POST", "/api/v1/jobs/{jobId}/screenshots/extract"),
+}
+
+_SCREENSHOT_REPLACE_VALIDATION_PATHS: set[tuple[str, str]] = {
+    ("POST", "/api/v1/anchors/{anchorId}/replace"),
+}
+
+_SCREENSHOT_ANNOTATE_VALIDATION_PATHS: set[tuple[str, str]] = {
+    ("POST", "/api/v1/anchors/{anchorId}/annotations"),
+}
+
+_SCREENSHOT_UPLOAD_VALIDATION_PATHS: set[tuple[str, str]] = {
+    ("POST", "/api/v1/jobs/{jobId}/screenshots/uploads"),
+    ("POST", "/api/v1/jobs/{jobId}/screenshots/uploads/{uploadId}/confirm"),
+    ("POST", "/api/v1/anchors/{anchorId}/attach-upload"),
 }
 
 _INTERNAL_CALLBACK_409_ONEOF_REFS: list[str] = [
@@ -172,13 +219,410 @@ def _apply_instruction_contract_schema(schema: dict) -> None:
         conflict_content["schema"] = {"$ref": "#/components/schemas/VersionConflictError"}
 
     instruction_schema = schema.get("components", {}).get("schemas", {}).get("Instruction")
-    if not instruction_schema:
+    if instruction_schema:
+        instruction_schema.setdefault("properties", {})["id"] = {
+            "type": "string",
+            "deprecated": True,
+            "description": "Deprecated alias of instruction_id.",
+        }
+
+    regenerate_path_item = schema.get("paths", {}).get("/api/v1/instructions/{instructionId}/regenerate")
+    if regenerate_path_item:
+        regenerate_operation = regenerate_path_item.get("post")
+        if regenerate_operation:
+            components = schema.setdefault("components", {}).setdefault("schemas", {})
+            components["RegenerateSelection"] = {
+                "oneOf": [
+                    {
+                        "type": "object",
+                        "required": ["block_id"],
+                        "properties": {
+                            "block_id": {"type": "string"},
+                        },
+                    },
+                    {
+                        "type": "object",
+                        "required": ["char_range"],
+                        "properties": {
+                            "char_range": {"$ref": "#/components/schemas/CharRange"},
+                        },
+                    },
+                ]
+            }
+
+            request_body = (
+                regenerate_operation.setdefault("requestBody", {})
+                .setdefault("content", {})
+                .setdefault("application/json", {})
+            )
+            request_body["schema"] = {"$ref": "#/components/schemas/RegenerateRequest"}
+
+            regenerate_responses = regenerate_operation.setdefault("responses", {})
+            for status_code in ("200", "202"):
+                response_content = (
+                    regenerate_responses.setdefault(status_code, {"description": "See API contract"})
+                    .setdefault("content", {})
+                    .setdefault("application/json", {})
+                )
+                response_content["schema"] = {"$ref": "#/components/schemas/RegenerateTask"}
+
+            bad_request = (
+                regenerate_responses.setdefault("400", {"description": "See API contract"})
+                .setdefault("content", {})
+                .setdefault("application/json", {})
+            )
+            bad_request["schema"] = {"$ref": "#/components/schemas/Error"}
+
+            conflict = (
+                regenerate_responses.setdefault("409", {"description": "See API contract"})
+                .setdefault("content", {})
+                .setdefault("application/json", {})
+            )
+            conflict["schema"] = {"$ref": "#/components/schemas/VersionConflictError"}
+
+    task_path_item = schema.get("paths", {}).get("/api/v1/tasks/{taskId}")
+    if not task_path_item:
         return
-    instruction_schema.setdefault("properties", {})["id"] = {
-        "type": "string",
-        "deprecated": True,
-        "description": "Deprecated alias of instruction_id.",
-    }
+    task_operation = task_path_item.get("get")
+    if not task_operation:
+        return
+
+    task_responses = task_operation.setdefault("responses", {})
+    success = (
+        task_responses.setdefault("200", {"description": "See API contract"})
+        .setdefault("content", {})
+        .setdefault("application/json", {})
+    )
+    success["schema"] = {"$ref": "#/components/schemas/RegenerateTask"}
+    not_found = (
+        task_responses.setdefault("404", {"description": "See API contract"})
+        .setdefault("content", {})
+        .setdefault("application/json", {})
+    )
+    not_found["schema"] = {"$ref": "#/components/schemas/NoLeakNotFoundError"}
+
+
+def _apply_screenshot_contract_schema(schema: dict) -> None:
+    """Force screenshot extraction/replacement/polling schemas to match contract refs."""
+    anchor_create_request_schema = schema.get("components", {}).get("schemas", {}).get("ScreenshotAnchorCreateRequest")
+    if anchor_create_request_schema:
+        anchor_create_properties = anchor_create_request_schema.setdefault("properties", {})
+        anchor_create_properties["addressing"] = {"$ref": "#/components/schemas/AnchorAddress"}
+
+    anchor_address_schema = schema.get("components", {}).get("schemas", {}).get("AnchorAddress")
+    if anchor_address_schema:
+        anchor_address_properties = anchor_address_schema.setdefault("properties", {})
+        anchor_address_properties["char_range"] = {"$ref": "#/components/schemas/CharRange"}
+        anchor_address_properties["strategy"] = {"type": "string"}
+
+    anchor_resolution_schema = schema.get("components", {}).get("schemas", {}).get("AnchorResolution")
+    if anchor_resolution_schema:
+        anchor_resolution_properties = anchor_resolution_schema.setdefault("properties", {})
+        anchor_resolution_properties["trace"] = {"type": "object", "additionalProperties": True}
+
+    screenshot_request_schema = schema.get("components", {}).get("schemas", {}).get("ScreenshotExtractionRequest")
+    if screenshot_request_schema:
+        screenshot_request_schema.setdefault("properties", {})["char_range"] = {"$ref": "#/components/schemas/CharRange"}
+
+    screenshot_asset_schema = schema.get("components", {}).get("schemas", {}).get("ScreenshotAsset")
+    if screenshot_asset_schema:
+        asset_properties = screenshot_asset_schema.setdefault("properties", {})
+        for optional_string_field in (
+            "extraction_key",
+            "checksum_sha256",
+            "upload_id",
+            "ops_hash",
+            "rendered_from_asset_id",
+        ):
+            asset_properties[optional_string_field] = {"type": "string"}
+
+    instruction_anchors_path_item = schema.get("paths", {}).get("/api/v1/instructions/{instructionId}/anchors")
+    if instruction_anchors_path_item:
+        create_operation = instruction_anchors_path_item.get("post")
+        if create_operation:
+            request_body = (
+                create_operation.setdefault("requestBody", {})
+                .setdefault("content", {})
+                .setdefault("application/json", {})
+            )
+            request_body["schema"] = {"$ref": "#/components/schemas/ScreenshotAnchorCreateRequest"}
+
+            create_responses = create_operation.setdefault("responses", {})
+            created = (
+                create_responses.setdefault("201", {"description": "See API contract"})
+                .setdefault("content", {})
+                .setdefault("application/json", {})
+            )
+            created["schema"] = {"$ref": "#/components/schemas/ScreenshotAnchor"}
+            not_found = (
+                create_responses.setdefault("404", {"description": "See API contract"})
+                .setdefault("content", {})
+                .setdefault("application/json", {})
+            )
+            not_found["schema"] = {"$ref": "#/components/schemas/NoLeakNotFoundError"}
+
+        list_operation = instruction_anchors_path_item.get("get")
+        if list_operation:
+            for parameter in list_operation.get("parameters", []):
+                if parameter.get("name") == "instruction_version_id" and parameter.get("in") == "query":
+                    parameter["schema"] = {"type": "string"}
+                if parameter.get("name") == "include_deleted_assets" and parameter.get("in") == "query":
+                    parameter["schema"] = {"type": "boolean", "default": False}
+
+            list_responses = list_operation.setdefault("responses", {})
+            success = (
+                list_responses.setdefault("200", {"description": "See API contract"})
+                .setdefault("content", {})
+                .setdefault("application/json", {})
+            )
+            success["schema"] = {
+                "type": "array",
+                "items": {"$ref": "#/components/schemas/ScreenshotAnchor"},
+            }
+            not_found = (
+                list_responses.setdefault("404", {"description": "See API contract"})
+                .setdefault("content", {})
+                .setdefault("application/json", {})
+            )
+            not_found["schema"] = {"$ref": "#/components/schemas/NoLeakNotFoundError"}
+
+    anchor_path_item = schema.get("paths", {}).get("/api/v1/anchors/{anchorId}")
+    if anchor_path_item:
+        anchor_get_operation = anchor_path_item.get("get")
+        if anchor_get_operation:
+            for parameter in anchor_get_operation.get("parameters", []):
+                if parameter.get("name") == "target_instruction_version_id" and parameter.get("in") == "query":
+                    parameter["schema"] = {"type": "string"}
+
+            anchor_get_responses = anchor_get_operation.setdefault("responses", {})
+            success = (
+                anchor_get_responses.setdefault("200", {"description": "See API contract"})
+                .setdefault("content", {})
+                .setdefault("application/json", {})
+            )
+            success["schema"] = {"$ref": "#/components/schemas/ScreenshotAnchor"}
+            not_found = (
+                anchor_get_responses.setdefault("404", {"description": "See API contract"})
+                .setdefault("content", {})
+                .setdefault("application/json", {})
+            )
+            not_found["schema"] = {"$ref": "#/components/schemas/NoLeakNotFoundError"}
+
+    extract_path_item = schema.get("paths", {}).get("/api/v1/jobs/{jobId}/screenshots/extract")
+    if extract_path_item:
+        extract_operation = extract_path_item.get("post")
+        if extract_operation:
+            request_body = (
+                extract_operation.setdefault("requestBody", {})
+                .setdefault("content", {})
+                .setdefault("application/json", {})
+            )
+            request_body["schema"] = {"$ref": "#/components/schemas/ScreenshotExtractionRequest"}
+
+            extract_responses = extract_operation.setdefault("responses", {})
+            for status_code in ("200", "202"):
+                response_content = (
+                    extract_responses.setdefault(status_code, {"description": "See API contract"})
+                    .setdefault("content", {})
+                    .setdefault("application/json", {})
+                )
+                response_content["schema"] = {"$ref": "#/components/schemas/ScreenshotTask"}
+
+            bad_request = (
+                extract_responses.setdefault("400", {"description": "See API contract"})
+                .setdefault("content", {})
+                .setdefault("application/json", {})
+            )
+            bad_request["schema"] = {"$ref": "#/components/schemas/Error"}
+
+            not_found = (
+                extract_responses.setdefault("404", {"description": "See API contract"})
+                .setdefault("content", {})
+                .setdefault("application/json", {})
+            )
+            not_found["schema"] = {"$ref": "#/components/schemas/NoLeakNotFoundError"}
+
+    replace_path_item = schema.get("paths", {}).get("/api/v1/anchors/{anchorId}/replace")
+    if replace_path_item:
+        replace_operation = replace_path_item.get("post")
+        if replace_operation:
+            request_body = (
+                replace_operation.setdefault("requestBody", {})
+                .setdefault("content", {})
+                .setdefault("application/json", {})
+            )
+            request_body["schema"] = {"$ref": "#/components/schemas/ScreenshotReplaceRequest"}
+
+            replace_responses = replace_operation.setdefault("responses", {})
+            for status_code in ("200", "202"):
+                response_content = (
+                    replace_responses.setdefault(status_code, {"description": "See API contract"})
+                    .setdefault("content", {})
+                    .setdefault("application/json", {})
+                )
+                response_content["schema"] = {"$ref": "#/components/schemas/ScreenshotTask"}
+
+            bad_request = (
+                replace_responses.setdefault("400", {"description": "See API contract"})
+                .setdefault("content", {})
+                .setdefault("application/json", {})
+            )
+            bad_request["schema"] = {"$ref": "#/components/schemas/Error"}
+
+            not_found = (
+                replace_responses.setdefault("404", {"description": "See API contract"})
+                .setdefault("content", {})
+                .setdefault("application/json", {})
+            )
+            not_found["schema"] = {"$ref": "#/components/schemas/NoLeakNotFoundError"}
+
+    upload_ticket_path_item = schema.get("paths", {}).get("/api/v1/jobs/{jobId}/screenshots/uploads")
+    if upload_ticket_path_item:
+        upload_ticket_operation = upload_ticket_path_item.get("post")
+        if upload_ticket_operation:
+            request_body = (
+                upload_ticket_operation.setdefault("requestBody", {})
+                .setdefault("content", {})
+                .setdefault("application/json", {})
+            )
+            request_body["schema"] = {"$ref": "#/components/schemas/CreateCustomUploadRequest"}
+
+            upload_ticket_responses = upload_ticket_operation.setdefault("responses", {})
+            created = (
+                upload_ticket_responses.setdefault("201", {"description": "See API contract"})
+                .setdefault("content", {})
+                .setdefault("application/json", {})
+            )
+            created["schema"] = {"$ref": "#/components/schemas/CustomUploadTicket"}
+            not_found = (
+                upload_ticket_responses.setdefault("404", {"description": "See API contract"})
+                .setdefault("content", {})
+                .setdefault("application/json", {})
+            )
+            not_found["schema"] = {"$ref": "#/components/schemas/NoLeakNotFoundError"}
+
+    confirm_upload_path_item = schema.get("paths", {}).get("/api/v1/jobs/{jobId}/screenshots/uploads/{uploadId}/confirm")
+    if confirm_upload_path_item:
+        confirm_upload_operation = confirm_upload_path_item.get("post")
+        if confirm_upload_operation:
+            request_body = (
+                confirm_upload_operation.setdefault("requestBody", {})
+                .setdefault("content", {})
+                .setdefault("application/json", {})
+            )
+            request_body["schema"] = {"$ref": "#/components/schemas/ConfirmCustomUploadRequest"}
+
+            confirm_upload_responses = confirm_upload_operation.setdefault("responses", {})
+            success = (
+                confirm_upload_responses.setdefault("200", {"description": "See API contract"})
+                .setdefault("content", {})
+                .setdefault("application/json", {})
+            )
+            success["schema"] = {"$ref": "#/components/schemas/ConfirmCustomUploadResponse"}
+            not_found = (
+                confirm_upload_responses.setdefault("404", {"description": "See API contract"})
+                .setdefault("content", {})
+                .setdefault("application/json", {})
+            )
+            not_found["schema"] = {"$ref": "#/components/schemas/NoLeakNotFoundError"}
+
+    attach_upload_path_item = schema.get("paths", {}).get("/api/v1/anchors/{anchorId}/attach-upload")
+    if attach_upload_path_item:
+        attach_upload_operation = attach_upload_path_item.get("post")
+        if attach_upload_operation:
+            request_body = (
+                attach_upload_operation.setdefault("requestBody", {})
+                .setdefault("content", {})
+                .setdefault("application/json", {})
+            )
+            request_body["schema"] = {"$ref": "#/components/schemas/AttachUploadedAssetRequest"}
+
+            attach_upload_responses = attach_upload_operation.setdefault("responses", {})
+            success = (
+                attach_upload_responses.setdefault("200", {"description": "See API contract"})
+                .setdefault("content", {})
+                .setdefault("application/json", {})
+            )
+            success["schema"] = {"$ref": "#/components/schemas/ScreenshotAnchor"}
+            not_found = (
+                attach_upload_responses.setdefault("404", {"description": "See API contract"})
+                .setdefault("content", {})
+                .setdefault("application/json", {})
+            )
+            not_found["schema"] = {"$ref": "#/components/schemas/NoLeakNotFoundError"}
+
+    annotate_path_item = schema.get("paths", {}).get("/api/v1/anchors/{anchorId}/annotations")
+    if annotate_path_item:
+        annotate_operation = annotate_path_item.get("post")
+        if annotate_operation:
+            request_body = (
+                annotate_operation.setdefault("requestBody", {})
+                .setdefault("content", {})
+                .setdefault("application/json", {})
+            )
+            request_body["schema"] = {"$ref": "#/components/schemas/AnnotateScreenshotRequest"}
+
+            annotate_responses = annotate_operation.setdefault("responses", {})
+            success = (
+                annotate_responses.setdefault("200", {"description": "See API contract"})
+                .setdefault("content", {})
+                .setdefault("application/json", {})
+            )
+            success["schema"] = {"$ref": "#/components/schemas/AnnotateScreenshotResponse"}
+            bad_request = (
+                annotate_responses.setdefault("400", {"description": "See API contract"})
+                .setdefault("content", {})
+                .setdefault("application/json", {})
+            )
+            bad_request["schema"] = {"$ref": "#/components/schemas/Error"}
+            not_found = (
+                annotate_responses.setdefault("404", {"description": "See API contract"})
+                .setdefault("content", {})
+                .setdefault("application/json", {})
+            )
+            not_found["schema"] = {"$ref": "#/components/schemas/NoLeakNotFoundError"}
+
+    task_path_item = schema.get("paths", {}).get("/api/v1/screenshot-tasks/{taskId}")
+    if not task_path_item:
+        return
+    task_operation = task_path_item.get("get")
+    if not task_operation:
+        return
+
+    task_responses = task_operation.setdefault("responses", {})
+    success = (
+        task_responses.setdefault("200", {"description": "See API contract"})
+        .setdefault("content", {})
+        .setdefault("application/json", {})
+    )
+    success["schema"] = {"$ref": "#/components/schemas/ScreenshotTask"}
+    not_found = (
+        task_responses.setdefault("404", {"description": "See API contract"})
+        .setdefault("content", {})
+        .setdefault("application/json", {})
+    )
+    not_found["schema"] = {"$ref": "#/components/schemas/NoLeakNotFoundError"}
+
+    delete_path_item = schema.get("paths", {}).get("/api/v1/anchors/{anchorId}/assets/{assetId}")
+    if not delete_path_item:
+        return
+    delete_operation = delete_path_item.get("delete")
+    if not delete_operation:
+        return
+
+    delete_responses = delete_operation.setdefault("responses", {})
+    success_delete = (
+        delete_responses.setdefault("200", {"description": "See API contract"})
+        .setdefault("content", {})
+        .setdefault("application/json", {})
+    )
+    success_delete["schema"] = {"$ref": "#/components/schemas/SoftDeleteScreenshotAssetResponse"}
+    not_found_delete = (
+        delete_responses.setdefault("404", {"description": "See API contract"})
+        .setdefault("content", {})
+        .setdefault("application/json", {})
+    )
+    not_found_delete["schema"] = {"$ref": "#/components/schemas/NoLeakNotFoundError"}
 
 
 async def _instruction_update_validation_payload(request: Request) -> VersionConflictError:
@@ -234,9 +678,27 @@ def create_app() -> FastAPI:
         if route_key in _INSTRUCTION_VALIDATION_PATHS:
             payload = NoLeakNotFoundError(code="RESOURCE_NOT_FOUND", message="Resource not found")
             return JSONResponse(status_code=404, content=payload.model_dump())
+        if route_key in _ANCHOR_LIFECYCLE_VALIDATION_PATHS:
+            payload = NoLeakNotFoundError(code="RESOURCE_NOT_FOUND", message="Resource not found")
+            return JSONResponse(status_code=404, content=payload.model_dump())
         if route_key in _INSTRUCTION_UPDATE_VALIDATION_PATHS:
             payload = await _instruction_update_validation_payload(request)
             return JSONResponse(status_code=409, content=payload.model_dump())
+        if route_key in _INSTRUCTION_REGENERATE_VALIDATION_PATHS:
+            payload = ErrorResponse(code="VALIDATION_ERROR", message="Invalid regenerate payload")
+            return JSONResponse(status_code=400, content=payload.model_dump())
+        if route_key in _SCREENSHOT_EXTRACT_VALIDATION_PATHS:
+            payload = ErrorResponse(code="VALIDATION_ERROR", message="Invalid extraction payload")
+            return JSONResponse(status_code=400, content=payload.model_dump())
+        if route_key in _SCREENSHOT_REPLACE_VALIDATION_PATHS:
+            payload = ErrorResponse(code="VALIDATION_ERROR", message="Invalid replacement payload")
+            return JSONResponse(status_code=400, content=payload.model_dump())
+        if route_key in _SCREENSHOT_ANNOTATE_VALIDATION_PATHS:
+            payload = ErrorResponse(code="VALIDATION_ERROR", message="Invalid annotation payload")
+            return JSONResponse(status_code=400, content=payload.model_dump())
+        if route_key in _SCREENSHOT_UPLOAD_VALIDATION_PATHS:
+            payload = NoLeakNotFoundError(code="RESOURCE_NOT_FOUND", message="Resource not found")
+            return JSONResponse(status_code=404, content=payload.model_dump())
 
         return await request_validation_exception_handler(request, exc)
 
@@ -260,6 +722,7 @@ def create_app() -> FastAPI:
         _apply_confirm_upload_conflict_schema(schema)
         _apply_transcript_contract_schema(schema)
         _apply_instruction_contract_schema(schema)
+        _apply_screenshot_contract_schema(schema)
         app.openapi_schema = schema
         return app.openapi_schema
 

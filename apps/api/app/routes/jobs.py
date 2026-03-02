@@ -16,12 +16,25 @@ from app.schemas.error import (
     VideoUriConflictError,
 )
 from app.schemas.job import (
+    AnnotateScreenshotRequest,
+    AnnotateScreenshotResponse,
+    AttachUploadedAssetRequest,
+    ConfirmCustomUploadRequest,
+    ConfirmCustomUploadResponse,
+    CreateCustomUploadRequest,
     ConfirmUploadRequest,
     ConfirmUploadResponse,
+    CustomUploadTicket,
     Job,
     RetryJobRequest,
     RetryJobResponse,
     RunJobResponse,
+    ScreenshotAnchor,
+    ScreenshotAnchorCreateRequest,
+    SoftDeleteScreenshotAssetResponse,
+    ScreenshotExtractionRequest,
+    ScreenshotReplaceRequest,
+    ScreenshotTask,
     TranscriptPage,
 )
 from app.services.jobs import JobService
@@ -160,3 +173,229 @@ async def cancel_job(
     service: Annotated[JobService, Depends(get_job_service)],
 ) -> Job:
     return service.cancel_job(owner_id=principal.user_id, job_id=job_id, correlation_id=correlation_id)
+
+
+@router.post(
+    "/jobs/{jobId}/screenshots/extract",
+    response_model=ScreenshotTask,
+    response_model_exclude_none=True,
+    responses={
+        200: {"model": ScreenshotTask},
+        202: {"model": ScreenshotTask},
+        400: {"model": Error},
+        404: {"model": NoLeakNotFoundError},
+    },
+)
+async def request_screenshot_extraction(
+    job_id: Annotated[str, Path(alias="jobId")],
+    payload: ScreenshotExtractionRequest,
+    response: Response,
+    principal: Annotated[AuthPrincipal, Depends(get_authenticated_principal)],
+    service: Annotated[JobService, Depends(get_job_service)],
+) -> ScreenshotTask:
+    result = service.request_screenshot_extraction(
+        owner_id=principal.user_id,
+        job_id=job_id,
+        payload=payload,
+    )
+    response.status_code = status.HTTP_200_OK if result.replayed else status.HTTP_202_ACCEPTED
+    return result.task
+
+
+@router.post(
+    "/jobs/{jobId}/screenshots/uploads",
+    response_model=CustomUploadTicket,
+    status_code=status.HTTP_201_CREATED,
+    responses={404: {"model": NoLeakNotFoundError}},
+)
+async def create_custom_upload_ticket(
+    job_id: Annotated[str, Path(alias="jobId")],
+    payload: CreateCustomUploadRequest,
+    principal: Annotated[AuthPrincipal, Depends(get_authenticated_principal)],
+    service: Annotated[JobService, Depends(get_job_service)],
+) -> CustomUploadTicket:
+    return service.create_custom_upload_ticket(
+        owner_id=principal.user_id,
+        job_id=job_id,
+        payload=payload,
+    )
+
+
+@router.post(
+    "/jobs/{jobId}/screenshots/uploads/{uploadId}/confirm",
+    response_model=ConfirmCustomUploadResponse,
+    response_model_exclude_none=True,
+    responses={404: {"model": NoLeakNotFoundError}},
+)
+async def confirm_custom_upload(
+    job_id: Annotated[str, Path(alias="jobId")],
+    upload_id: Annotated[str, Path(alias="uploadId")],
+    payload: ConfirmCustomUploadRequest,
+    principal: Annotated[AuthPrincipal, Depends(get_authenticated_principal)],
+    service: Annotated[JobService, Depends(get_job_service)],
+) -> ConfirmCustomUploadResponse:
+    return service.confirm_custom_upload(
+        owner_id=principal.user_id,
+        job_id=job_id,
+        upload_id=upload_id,
+        payload=payload,
+    )
+
+
+@router.post(
+    "/instructions/{instructionId}/anchors",
+    response_model=ScreenshotAnchor,
+    status_code=status.HTTP_201_CREATED,
+    responses={404: {"model": NoLeakNotFoundError}},
+)
+async def create_screenshot_anchor(
+    instruction_id: Annotated[str, Path(alias="instructionId")],
+    payload: ScreenshotAnchorCreateRequest,
+    principal: Annotated[AuthPrincipal, Depends(get_authenticated_principal)],
+    service: Annotated[JobService, Depends(get_job_service)],
+) -> ScreenshotAnchor:
+    return service.create_screenshot_anchor(
+        owner_id=principal.user_id,
+        instruction_id=instruction_id,
+        payload=payload,
+    )
+
+
+@router.get(
+    "/instructions/{instructionId}/anchors",
+    response_model=list[ScreenshotAnchor],
+    responses={404: {"model": NoLeakNotFoundError}},
+)
+async def list_screenshot_anchors(
+    instruction_id: Annotated[str, Path(alias="instructionId")],
+    principal: Annotated[AuthPrincipal, Depends(get_authenticated_principal)],
+    service: Annotated[JobService, Depends(get_job_service)],
+    instruction_version_id: str | None = Query(default=None),
+    include_deleted_assets: bool = Query(default=False),
+) -> list[ScreenshotAnchor]:
+    return service.list_screenshot_anchors(
+        owner_id=principal.user_id,
+        instruction_id=instruction_id,
+        instruction_version_id=instruction_version_id,
+        include_deleted_assets=include_deleted_assets,
+    )
+
+
+@router.get(
+    "/anchors/{anchorId}",
+    response_model=ScreenshotAnchor,
+    responses={404: {"model": NoLeakNotFoundError}},
+)
+async def get_screenshot_anchor(
+    anchor_id: Annotated[str, Path(alias="anchorId")],
+    principal: Annotated[AuthPrincipal, Depends(get_authenticated_principal)],
+    service: Annotated[JobService, Depends(get_job_service)],
+    target_instruction_version_id: str | None = Query(default=None),
+) -> ScreenshotAnchor:
+    return service.get_screenshot_anchor(
+        owner_id=principal.user_id,
+        anchor_id=anchor_id,
+        target_instruction_version_id=target_instruction_version_id,
+    )
+
+
+@router.post(
+    "/anchors/{anchorId}/attach-upload",
+    response_model=ScreenshotAnchor,
+    response_model_exclude_none=True,
+    responses={404: {"model": NoLeakNotFoundError}},
+)
+async def attach_uploaded_asset(
+    anchor_id: Annotated[str, Path(alias="anchorId")],
+    payload: AttachUploadedAssetRequest,
+    principal: Annotated[AuthPrincipal, Depends(get_authenticated_principal)],
+    service: Annotated[JobService, Depends(get_job_service)],
+) -> ScreenshotAnchor:
+    return service.attach_uploaded_asset(
+        owner_id=principal.user_id,
+        anchor_id=anchor_id,
+        payload=payload,
+    )
+
+
+@router.post(
+    "/anchors/{anchorId}/annotations",
+    response_model=AnnotateScreenshotResponse,
+    responses={
+        400: {"model": Error},
+        404: {"model": NoLeakNotFoundError},
+    },
+)
+async def annotate_screenshot(
+    anchor_id: Annotated[str, Path(alias="anchorId")],
+    payload: AnnotateScreenshotRequest,
+    principal: Annotated[AuthPrincipal, Depends(get_authenticated_principal)],
+    service: Annotated[JobService, Depends(get_job_service)],
+) -> AnnotateScreenshotResponse:
+    return service.annotate_screenshot(
+        owner_id=principal.user_id,
+        anchor_id=anchor_id,
+        payload=payload,
+    )
+
+
+@router.post(
+    "/anchors/{anchorId}/replace",
+    response_model=ScreenshotTask,
+    response_model_exclude_none=True,
+    responses={
+        200: {"model": ScreenshotTask},
+        202: {"model": ScreenshotTask},
+        400: {"model": Error},
+        404: {"model": NoLeakNotFoundError},
+    },
+)
+async def request_screenshot_replace(
+    anchor_id: Annotated[str, Path(alias="anchorId")],
+    payload: ScreenshotReplaceRequest,
+    response: Response,
+    principal: Annotated[AuthPrincipal, Depends(get_authenticated_principal)],
+    service: Annotated[JobService, Depends(get_job_service)],
+) -> ScreenshotTask:
+    result = service.request_screenshot_replacement(
+        owner_id=principal.user_id,
+        anchor_id=anchor_id,
+        payload=payload,
+    )
+    response.status_code = status.HTTP_200_OK if result.replayed else status.HTTP_202_ACCEPTED
+    return result.task
+
+
+@router.delete(
+    "/anchors/{anchorId}/assets/{assetId}",
+    response_model=SoftDeleteScreenshotAssetResponse,
+    responses={404: {"model": NoLeakNotFoundError}},
+)
+async def soft_delete_screenshot_asset(
+    anchor_id: Annotated[str, Path(alias="anchorId")],
+    asset_id: Annotated[str, Path(alias="assetId")],
+    principal: Annotated[AuthPrincipal, Depends(get_authenticated_principal)],
+    service: Annotated[JobService, Depends(get_job_service)],
+) -> SoftDeleteScreenshotAssetResponse:
+    return service.soft_delete_screenshot_asset(
+        owner_id=principal.user_id,
+        anchor_id=anchor_id,
+        asset_id=asset_id,
+    )
+
+
+@router.get(
+    "/screenshot-tasks/{taskId}",
+    response_model=ScreenshotTask,
+    response_model_exclude_none=True,
+    responses={404: {"model": NoLeakNotFoundError}},
+)
+async def get_screenshot_task(
+    task_id: Annotated[str, Path(alias="taskId")],
+    principal: Annotated[AuthPrincipal, Depends(get_authenticated_principal)],
+    service: Annotated[JobService, Depends(get_job_service)],
+) -> ScreenshotTask:
+    return service.get_screenshot_task(
+        owner_id=principal.user_id,
+        task_id=task_id,
+    )

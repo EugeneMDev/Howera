@@ -1,6 +1,6 @@
 # Story 4.4: Structural Validation on Create and Update with Persisted Result
 
-Status: ready-for-dev
+Status: done
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 
@@ -18,25 +18,29 @@ so that instruction quality status is explicit and traceable.
 
 ## Tasks / Subtasks
 
-- [ ] Implement structural-validation domain boundary and normalized result model (AC: 1, 2, 3)
-- [ ] Add a dedicated instruction validation helper/module that evaluates markdown structure and returns normalized diagnostics.
-- [ ] Keep validation engine deterministic and side-effect free; avoid logging raw markdown or prompt/transcript-like content.
-- [ ] Define validator versioning strategy (static `validator_version` identifier) for persisted traceability.
-- [ ] Enforce validation on every instruction version write path (create + update) (AC: 1, 2)
-- [ ] Apply validation automatically at the shared instruction-version persistence boundary so generation/regeneration/save flows inherit the same behavior.
-- [ ] Ensure update flows do not bypass validation and always persist fresh validation metadata on newly created versions.
-- [ ] Preserve immutable prior versions and ensure new versions carry their own validation snapshot.
-- [ ] Persist contract-aligned validation metadata and sanitized diagnostics (AC: 2, 3)
-- [ ] Persist `validation_status`, `validation_errors` (`errors[]` equivalent), `validated_at`, and `validator_version` for each new instruction version.
-- [ ] Record only structural/schema diagnostics (`code`, safe `message`, optional `path`) and exclude transcript, prompt content, secrets, and free-form sensitive payloads.
-- [ ] Preserve no-existence-leak behavior and existing contract-safe status handling for instruction reads/updates.
-- [ ] Add AC-mapped tests + regression coverage (AC: 1, 2, 3)
-- [ ] Add unit tests for validator pass/fail outcomes, deterministic diagnostics, and sanitization constraints.
-- [ ] Add API/service tests proving update-created versions persist expected validation fields and preserve prior version metadata immutably.
-- [ ] Add create-path tests at the shared persistence boundary to verify validation executes for non-update instruction version creation flows.
-- [ ] Add negative tests ensuring sensitive strings are not stored in validation diagnostics or logs.
-- [ ] Re-verify `/openapi.json` instruction schemas remain contract-aligned for validation fields and enums.
-- [ ] Run `make lint`, `make test`, and `make check` in `apps/api`.
+- [x] Implement structural-validation domain boundary and normalized result model (AC: 1, 2, 3)
+- [x] Add a dedicated instruction validation helper/module that evaluates markdown structure and returns normalized diagnostics.
+- [x] Keep validation engine deterministic and side-effect free; avoid logging raw markdown or prompt/transcript-like content.
+- [x] Define validator versioning strategy (static `validator_version` identifier) for persisted traceability.
+- [x] Enforce validation on every instruction version write path (create + update) (AC: 1, 2)
+- [x] Apply validation automatically at the shared instruction-version persistence boundary so generation/regeneration/save flows inherit the same behavior.
+- [x] Ensure update flows do not bypass validation and always persist fresh validation metadata on newly created versions.
+- [x] Preserve immutable prior versions and ensure new versions carry their own validation snapshot.
+- [x] Persist contract-aligned validation metadata and sanitized diagnostics (AC: 2, 3)
+- [x] Persist `validation_status`, `validation_errors` (`errors[]` equivalent), `validated_at`, and `validator_version` for each new instruction version.
+- [x] Record only structural/schema diagnostics (`code`, safe `message`, optional `path`) and exclude transcript, prompt content, secrets, and free-form sensitive payloads.
+- [x] Preserve no-existence-leak behavior and existing contract-safe status handling for instruction reads/updates.
+- [x] Add AC-mapped tests + regression coverage (AC: 1, 2, 3)
+- [x] Add unit tests for validator pass/fail outcomes, deterministic diagnostics, and sanitization constraints.
+- [x] Add API/service tests proving update-created versions persist expected validation fields and preserve prior version metadata immutably.
+- [x] Add create-path tests at the shared persistence boundary to verify validation executes for non-update instruction version creation flows.
+- [x] Add negative tests ensuring sensitive strings are not stored in validation diagnostics or logs.
+- [x] Re-verify `/openapi.json` instruction schemas remain contract-aligned for validation fields and enums.
+- [x] Run `make lint`, `make test`, and `make check` in `apps/api`.
+
+### Review Follow-ups (AI)
+
+- [x] [AI-Review][MEDIUM] Expand heading detection to accept non-H1 ATX headings (`##`–`######`) so valid markdown structures are not incorrectly persisted as `FAIL`. [apps/api/app/domain/instruction_validation.py:13, apps/api/tests/test_instructions_ownership.py:649]
 
 ## Dev Notes
 
@@ -152,12 +156,48 @@ GPT-5.3-Codex
 - 2026-03-01: Captured validation persistence requirements (`validation_status`, diagnostics, `validated_at`, `validator_version`) with explicit sanitization guardrails.
 - 2026-03-01: Included previous-story intelligence from 4.2/4.3 to preserve contract-safe behavior and no-leak semantics.
 - 2026-03-01: Ultimate context engine analysis completed - comprehensive developer guide created.
+- 2026-03-01: Implemented structural validation helper (`structure-v1`) and wired validation execution into shared instruction-version persistence.
+- 2026-03-01: Updated instruction update flow to always persist newly computed validation metadata for each created version.
+- 2026-03-01: Added API/unit regression coverage for PASS/FAIL persistence, sanitized diagnostics, and immutable version history behavior.
+- 2026-03-01: Verified quality gates in `apps/api` with `make lint`, `make test`, and `make check` (all passing).
+- 2026-03-01: Completed senior code review, fixed heading-level validation false-negative (`##` and deeper headings), added regression coverage, reran quality gates, and moved story to `done`.
 
 ### File List
 
 - `_bmad-output/implementation-artifacts/4-4-structural-validation-on-create-and-update-with-persisted-result.md`
 - `_bmad-output/implementation-artifacts/sprint-status.yaml`
+- `apps/api/app/domain/instruction_validation.py`
+- `apps/api/app/repositories/memory.py`
+- `apps/api/app/services/instructions.py`
+- `apps/api/tests/test_instructions_ownership.py`
 
 ### Change Log
 
 - 2026-03-01: Created Story 4.4 artifact and moved sprint status from `backlog` to `ready-for-dev`.
+- 2026-03-01: Started development and moved sprint status from `ready-for-dev` to `in-progress`.
+- 2026-03-01: Implemented structural validation-on-write for instruction create/update with persisted validation metadata and sanitized diagnostics.
+- 2026-03-01: Added instruction validation persistence and sanitization tests; verified `make lint`, `make test`, and `make check` in `apps/api`.
+- 2026-03-01: Senior code review completed with one medium issue resolved (non-H1 heading support), quality gates re-verified, and story advanced to `done`.
+
+## Senior Developer Review (AI)
+
+### Reviewer
+
+- `Codex` (AI Senior Developer Reviewer)
+- Date: 2026-03-01
+
+### Outcome
+
+- Approved
+
+### Summary
+
+- Validation-on-write behavior and metadata persistence are contract-aligned for instruction create/update flows.
+- Sanitized diagnostics behavior is enforced and regression-tested.
+- One medium issue was identified and fixed during review: heading detection now accepts ATX heading levels `#` through `######`.
+
+### Severity Breakdown
+
+- High: 0
+- Medium: 1 (fixed)
+- Low: 0

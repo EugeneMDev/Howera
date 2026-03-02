@@ -3,26 +3,73 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+import hashlib
+import hmac
+import json
+import math
 from typing import Any
 from typing import Literal
+from urllib.parse import parse_qs, urlparse
 from uuid import uuid4
 
 from pydantic import ValidationError
 
+from app.domain.instruction_validation import validate_instruction_markdown
 from app.domain.job_fsm import ensure_transition
-from app.schemas.instruction import ValidationIssue, ValidationStatus
-from app.schemas.job import ArtifactManifest, JobStatus, TranscriptSegment
+from app.schemas.instruction import (
+    CharRange,
+    RegenerateProvenance,
+    RegenerateSelection,
+    RegenerateTaskStatus,
+    ValidationIssue,
+    ValidationStatus,
+)
+from app.schemas.job import (
+    ArtifactManifest,
+    ConfirmCustomUploadRequest,
+    CreateCustomUploadRequest,
+    ScreenshotFormat,
+    JobStatus,
+    ScreenshotExtractionRequest,
+    ScreenshotMimeType,
+    ScreenshotReplaceRequest,
+    ScreenshotOperation,
+    ScreenshotTaskStatus,
+    ScreenshotStrategy,
+    TranscriptSegment,
+)
 
 _IMMUTABLE_RAW_ARTIFACT_KEYS = frozenset({"video_uri", "audio_uri", "transcript_uri"})
 _MUTABLE_ARTIFACT_KEYS = frozenset({"draft_uri", "exports"})
 _TRANSITION_AUDIT_EVENT_TYPE = "JOB_STATUS_TRANSITION_APPLIED"
+_REGENERATE_AUDIT_EVENT_TYPE = "INSTRUCTION_REGENERATE_SUCCEEDED"
 _CALLBACK_FAILPOINT_STAGES = (
     "after_status",
     "after_manifest",
     "after_failure_metadata",
     "after_callback_event",
 )
+_CUSTOM_UPLOAD_MAX_SIZE_BYTES = 10 * 1024 * 1024
+_CUSTOM_UPLOAD_ALLOWED_MIME_TYPES: tuple[str, ...] = (
+    ScreenshotMimeType.PNG.value,
+    ScreenshotMimeType.JPEG.value,
+    ScreenshotMimeType.WEBP.value,
+)
+_SCREENSHOT_FORMAT_TO_MIME_TYPE: dict[str, str] = {
+    ScreenshotFormat.PNG.value: ScreenshotMimeType.PNG.value,
+    ScreenshotFormat.JPG.value: ScreenshotMimeType.JPEG.value,
+    ScreenshotFormat.WEBP.value: ScreenshotMimeType.WEBP.value,
+}
+_CUSTOM_UPLOAD_URL_SCHEME = "https"
+_CUSTOM_UPLOAD_URL_HOST = "uploads.howera.local"
+_CUSTOM_UPLOAD_SIGNING_KEY = b"howera-custom-upload-v1"
+_CUSTOM_UPLOAD_MIME_TO_EXTENSION: dict[str, str] = {
+    ScreenshotMimeType.PNG.value: ".png",
+    ScreenshotMimeType.JPEG.value: ".jpg",
+    ScreenshotMimeType.WEBP.value: ".webp",
+}
+_ANNOTATION_ALLOWED_OP_TYPES = frozenset({"blur", "arrow", "marker", "pencil"})
 
 
 @dataclass(slots=True)
@@ -118,6 +165,154 @@ class RetryRequestRecord:
 
 
 @dataclass(slots=True)
+class RegenerateTaskRecord:
+    id: str
+    instruction_id: str
+    owner_id: str
+    job_id: str
+    status: RegenerateTaskStatus
+    progress_pct: int | None
+    instruction_version: int | None
+    failure_code: str | None
+    failure_message: str | None
+    failed_stage: str | None
+    provenance: RegenerateProvenance
+    payload_signature: str
+    client_request_id: str
+    requested_at: datetime
+    updated_at: datetime | None = None
+
+
+@dataclass(slots=True)
+class RegenerateAuditRecord:
+    event_type: str
+    task_id: str
+    instruction_id: str
+    owner_id: str
+    instruction_version: int
+    occurred_at: datetime
+    recorded_at: datetime
+
+
+@dataclass(slots=True)
+class ScreenshotTaskRecord:
+    id: str
+    owner_id: str
+    job_id: str
+    instruction_id: str
+    instruction_version_id: str
+    operation: ScreenshotOperation
+    status: ScreenshotTaskStatus
+    timestamp_ms: int
+    offset_ms: int
+    strategy: ScreenshotStrategy
+    image_format: str
+    anchor_id: str | None
+    block_id: str | None
+    char_range: CharRange | None
+    idempotency_key: str | None
+    canonical_key: str
+    payload_signature: str
+    asset_id: str | None = None
+    failure_code: str | None = None
+    failure_message: str | None = None
+    requested_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
+@dataclass(slots=True)
+class ScreenshotAnchorRecord:
+    anchor_id: str
+    owner_id: str
+    job_id: str
+    instruction_id: str
+    instruction_version_id: str
+    active_asset_id: str | None
+    latest_asset_version: int
+    created_at: datetime
+    updated_at: datetime
+    addressing_type: Literal["block_id", "char_range"] = "block_id"
+    addressing_block_id: str | None = None
+    addressing_char_range: CharRange | None = None
+    addressing_strategy: str | None = None
+
+
+@dataclass(slots=True)
+class ScreenshotAssetRecord:
+    asset_id: str
+    anchor_id: str
+    owner_id: str
+    job_id: str
+    version: int
+    previous_asset_id: str | None
+    extraction_key: str | None
+    kind: str
+    image_uri: str
+    mime_type: str
+    width: int
+    height: int
+    checksum_sha256: str | None
+    upload_id: str | None
+    ops_hash: str | None
+    rendered_from_asset_id: str | None
+    is_deleted: bool
+    extraction_parameters: dict[str, Any]
+    created_at: datetime
+
+
+@dataclass(slots=True)
+class CustomUploadRecord:
+    upload_id: str
+    owner_id: str
+    job_id: str
+    filename: str
+    requested_mime_type: str
+    requested_size_bytes: int
+    requested_checksum_sha256: str
+    upload_url: str
+    expires_at: datetime
+    max_size_bytes: int
+    allowed_mime_types: tuple[str, ...]
+    confirmed: bool = False
+    confirmed_mime_type: str | None = None
+    confirmed_size_bytes: int | None = None
+    confirmed_checksum_sha256: str | None = None
+    confirmed_width: int | None = None
+    confirmed_height: int | None = None
+    confirmed_asset_id: str | None = None
+    confirmed_image_uri: str | None = None
+    confirmed_at: datetime | None = None
+
+
+@dataclass(slots=True)
+class AttachUploadReplayRecord:
+    asset_id: str
+    payload_signature: str
+    instruction_version_id: str
+    updated_at: datetime
+
+
+@dataclass(slots=True)
+class AnnotationReplayRecord:
+    anchor_id: str
+    base_asset_id: str
+    ops_hash: str
+    rendered_asset_id: str
+    active_asset_id: str
+    payload_signature: str
+
+
+@dataclass(slots=True)
+class ScreenshotAnnotationResultRecord:
+    anchor_id: str
+    base_asset_id: str
+    ops_hash: str
+    rendered_asset_id: str
+    active_asset_id: str
+    replayed: bool
+
+
+@dataclass(slots=True)
 class InMemoryStore:
     """Simple, deterministic persistence layer for scaffolding and tests."""
 
@@ -129,11 +324,35 @@ class InMemoryStore:
     latest_callback_at_by_job: dict[str, datetime] = field(default_factory=dict)
     workflow_dispatches_by_job: dict[str, WorkflowDispatchRecord] = field(default_factory=dict)
     retry_requests_by_job_and_client: dict[tuple[str, str], RetryRequestRecord] = field(default_factory=dict)
+    regenerate_tasks_by_id: dict[str, RegenerateTaskRecord] = field(default_factory=dict)
+    regenerate_request_task_id_by_owner_instruction_client: dict[tuple[str, str, str], str] = field(default_factory=dict)
+    regenerate_audit_events: list[RegenerateAuditRecord] = field(default_factory=list)
+    screenshot_tasks_by_id: dict[str, ScreenshotTaskRecord] = field(default_factory=dict)
+    screenshot_anchors_by_id: dict[str, ScreenshotAnchorRecord] = field(default_factory=dict)
+    screenshot_task_id_by_canonical_key: dict[str, str] = field(default_factory=dict)
+    screenshot_task_id_by_owner_job_idempotency: dict[tuple[str, str, str], str] = field(default_factory=dict)
+    screenshot_replace_task_id_by_anchor_canonical_key: dict[tuple[str, str], str] = field(default_factory=dict)
+    screenshot_replace_task_id_by_owner_anchor_idempotency: dict[tuple[str, str, str], str] = field(default_factory=dict)
+    screenshot_assets_by_id: dict[str, ScreenshotAssetRecord] = field(default_factory=dict)
+    screenshot_asset_ids_by_anchor: dict[str, list[str]] = field(default_factory=dict)
+    screenshot_annotation_asset_id_by_anchor_base_ops_hash: dict[tuple[str, str, str], str] = field(default_factory=dict)
+    screenshot_annotation_replay_by_owner_anchor_idempotency: dict[
+        tuple[str, str, str],
+        AnnotationReplayRecord,
+    ] = field(default_factory=dict)
+    custom_uploads_by_id: dict[str, CustomUploadRecord] = field(default_factory=dict)
+    attach_upload_replay_by_owner_anchor_idempotency: dict[
+        tuple[str, str, str],
+        AttachUploadReplayRecord,
+    ] = field(default_factory=dict)
     transcript_segments_by_job: dict[str, list[TranscriptSegment]] = field(default_factory=dict)
     project_write_count: int = 0
     job_write_count: int = 0
     instruction_write_count: int = 0
     dispatch_write_count: int = 0
+    regenerate_task_write_count: int = 0
+    regenerate_audit_write_count: int = 0
+    screenshot_task_write_count: int = 0
     dispatch_failure_message: str | None = None
     callback_mutation_failpoint_event_id: str | None = None
     callback_mutation_failpoint_stage: Literal[
@@ -143,6 +362,7 @@ class InMemoryStore:
         "after_callback_event",
     ] | None = None
     callback_mutation_failpoint_message: str = "Injected callback persistence failure"
+    annotation_render_failure_message: str | None = None
 
     def create_project(self, owner_id: str, name: str) -> ProjectRecord:
         now = datetime.now(UTC)
@@ -201,11 +421,7 @@ class InMemoryStore:
         job_id: str,
         version: int,
         markdown: str,
-        validation_status: ValidationStatus = ValidationStatus.PASS,
         updated_at: datetime | None = None,
-        validation_errors: list[ValidationIssue] | None = None,
-        validated_at: datetime | None = None,
-        validator_version: str | None = None,
         model_profile_id: str | None = None,
         prompt_template_id: str | None = None,
         prompt_params_ref: str | None = None,
@@ -217,6 +433,7 @@ class InMemoryStore:
         if any(record.version == version for record in history):
             raise ValueError("instruction version already exists")
 
+        validation_result = validate_instruction_markdown(markdown)
         record = InstructionRecord(
             instruction_id=instruction_id,
             job_id=job_id,
@@ -224,12 +441,12 @@ class InMemoryStore:
             version=version,
             markdown=markdown,
             updated_at=updated_at or datetime.now(UTC),
-            validation_status=validation_status,
-            validation_errors=[issue.model_copy(deep=True) for issue in validation_errors]
-            if validation_errors is not None
+            validation_status=validation_result.status,
+            validation_errors=[issue.model_copy(deep=True) for issue in validation_result.errors]
+            if validation_result.errors is not None
             else None,
-            validated_at=validated_at,
-            validator_version=validator_version,
+            validated_at=validation_result.validated_at,
+            validator_version=validation_result.validator_version,
             model_profile_id=model_profile_id,
             prompt_template_id=prompt_template_id,
             prompt_params_ref=prompt_params_ref,
@@ -539,6 +756,994 @@ class InMemoryStore:
     def get_retry_request(self, *, job_id: str, client_request_id: str) -> RetryRequestRecord | None:
         return self.retry_requests_by_job_and_client.get((job_id, client_request_id))
 
+    def create_regenerate_task(
+        self,
+        *,
+        owner_id: str,
+        instruction_id: str,
+        job_id: str,
+        base_version: int,
+        selection: RegenerateSelection,
+        client_request_id: str,
+        context: str | None = None,
+        model_profile: str | None = None,
+        prompt_template_id: str | None = None,
+        prompt_params_ref: str | None = None,
+    ) -> tuple[RegenerateTaskRecord, bool]:
+        request_key = (owner_id, instruction_id, client_request_id)
+        payload_signature = self._build_regenerate_payload_signature(
+            base_version=base_version,
+            selection=selection,
+            context=context,
+            model_profile=model_profile,
+            prompt_template_id=prompt_template_id,
+            prompt_params_ref=prompt_params_ref,
+        )
+
+        existing_task_id = self.regenerate_request_task_id_by_owner_instruction_client.get(request_key)
+        if existing_task_id is not None:
+            existing_task = self.regenerate_tasks_by_id[existing_task_id]
+            if existing_task.payload_signature != payload_signature:
+                raise ValueError("regenerate request payload differs from first accepted payload")
+            return self._copy_regenerate_task_record(existing_task), True
+
+        now = datetime.now(UTC)
+        task = RegenerateTaskRecord(
+            id=f"task-{uuid4()}",
+            instruction_id=instruction_id,
+            owner_id=owner_id,
+            job_id=job_id,
+            status=RegenerateTaskStatus.PENDING,
+            progress_pct=0,
+            instruction_version=None,
+            failure_code=None,
+            failure_message=None,
+            failed_stage=None,
+            provenance=RegenerateProvenance(
+                instruction_id=instruction_id,
+                base_version=base_version,
+                selection=selection.model_copy(deep=True),
+                requested_by=owner_id,
+                requested_at=now,
+                model_profile=model_profile,
+                prompt_template_id=prompt_template_id,
+                prompt_params_ref=prompt_params_ref,
+            ),
+            payload_signature=payload_signature,
+            client_request_id=client_request_id,
+            requested_at=now,
+            updated_at=now,
+        )
+        self.regenerate_tasks_by_id[task.id] = task
+        self.regenerate_request_task_id_by_owner_instruction_client[request_key] = task.id
+        self.regenerate_task_write_count += 1
+        return self._copy_regenerate_task_record(task), False
+
+    def get_regenerate_task_for_request(
+        self,
+        *,
+        owner_id: str,
+        instruction_id: str,
+        client_request_id: str,
+    ) -> RegenerateTaskRecord | None:
+        request_key = (owner_id, instruction_id, client_request_id)
+        task_id = self.regenerate_request_task_id_by_owner_instruction_client.get(request_key)
+        if task_id is None:
+            return None
+        task = self.regenerate_tasks_by_id.get(task_id)
+        if task is None:
+            return None
+        return self._copy_regenerate_task_record(task)
+
+    def regenerate_payload_matches_task(
+        self,
+        *,
+        task: RegenerateTaskRecord,
+        base_version: int,
+        selection: RegenerateSelection,
+        context: str | None = None,
+        model_profile: str | None = None,
+        prompt_template_id: str | None = None,
+        prompt_params_ref: str | None = None,
+    ) -> bool:
+        payload_signature = self._build_regenerate_payload_signature(
+            base_version=base_version,
+            selection=selection,
+            context=context,
+            model_profile=model_profile,
+            prompt_template_id=prompt_template_id,
+            prompt_params_ref=prompt_params_ref,
+        )
+        return task.payload_signature == payload_signature
+
+    def get_regenerate_task_for_owner(self, *, owner_id: str, task_id: str) -> RegenerateTaskRecord | None:
+        task = self.regenerate_tasks_by_id.get(task_id)
+        if task is None or task.owner_id != owner_id:
+            return None
+        return self._copy_regenerate_task_record(task)
+
+    def complete_regenerate_task_success(
+        self,
+        *,
+        task_id: str,
+        markdown: str,
+    ) -> RegenerateTaskRecord:
+        task = self.regenerate_tasks_by_id.get(task_id)
+        if task is None:
+            raise ValueError("regenerate task not found")
+        if task.status is RegenerateTaskStatus.SUCCEEDED:
+            return self._copy_regenerate_task_record(task)
+
+        current_instruction = self.get_instruction_for_owner(
+            owner_id=task.owner_id,
+            instruction_id=task.instruction_id,
+            version=None,
+        )
+        if current_instruction is None:
+            raise ValueError("instruction not found for regenerate task")
+
+        new_instruction = self.create_instruction_version(
+            owner_id=task.owner_id,
+            instruction_id=task.instruction_id,
+            job_id=task.job_id,
+            version=current_instruction.version + 1,
+            markdown=markdown,
+            model_profile_id=task.provenance.model_profile,
+            prompt_template_id=task.provenance.prompt_template_id,
+            prompt_params_ref=task.provenance.prompt_params_ref,
+        )
+
+        now = datetime.now(UTC)
+        task.status = RegenerateTaskStatus.SUCCEEDED
+        task.progress_pct = 100
+        task.instruction_version = new_instruction.version
+        task.failure_code = None
+        task.failure_message = None
+        task.failed_stage = None
+        task.updated_at = now
+        self.regenerate_task_write_count += 1
+
+        self.regenerate_audit_events.append(
+            RegenerateAuditRecord(
+                event_type=_REGENERATE_AUDIT_EVENT_TYPE,
+                task_id=task.id,
+                instruction_id=task.instruction_id,
+                owner_id=task.owner_id,
+                instruction_version=new_instruction.version,
+                occurred_at=now,
+                recorded_at=now,
+            )
+        )
+        self.regenerate_audit_write_count += 1
+        return self._copy_regenerate_task_record(task)
+
+    def fail_regenerate_task(
+        self,
+        *,
+        task_id: str,
+        failure_code: str,
+        failure_message: str | None = None,
+        failed_stage: str | None = None,
+    ) -> RegenerateTaskRecord:
+        task = self.regenerate_tasks_by_id.get(task_id)
+        if task is None:
+            raise ValueError("regenerate task not found")
+
+        task.status = RegenerateTaskStatus.FAILED
+        task.progress_pct = 100
+        task.instruction_version = None
+        task.failure_code = failure_code
+        task.failure_message = self._sanitize_regenerate_failure_message(failure_message)
+        task.failed_stage = failed_stage
+        task.updated_at = datetime.now(UTC)
+        self.regenerate_task_write_count += 1
+        return self._copy_regenerate_task_record(task)
+
+    def create_screenshot_extraction_task(
+        self,
+        *,
+        owner_id: str,
+        job_id: str,
+        payload: ScreenshotExtractionRequest,
+    ) -> tuple[ScreenshotTaskRecord, bool]:
+        canonical_key = self.build_screenshot_extraction_canonical_key(
+            job_id=job_id,
+            instruction_version_id=payload.instruction_version_id,
+            timestamp_ms=payload.timestamp_ms,
+            offset_ms=payload.offset_ms,
+            strategy=payload.strategy,
+            image_format=payload.format,
+        )
+        payload_signature = self._build_screenshot_payload_signature(payload=payload)
+
+        if payload.idempotency_key is not None:
+            request_key = (owner_id, job_id, payload.idempotency_key)
+            existing_task_id = self.screenshot_task_id_by_owner_job_idempotency.get(request_key)
+            if existing_task_id is not None:
+                existing_task = self.screenshot_tasks_by_id[existing_task_id]
+                if existing_task.payload_signature != payload_signature:
+                    raise ValueError("duplicate idempotency_key payload differs from first accepted request")
+                return self._copy_screenshot_task_record(existing_task), True
+
+        existing_task_id = self.screenshot_task_id_by_canonical_key.get(canonical_key)
+        if existing_task_id is not None:
+            existing_task = self.screenshot_tasks_by_id[existing_task_id]
+            if payload.idempotency_key is not None:
+                # Canonical duplicates should replay, but avoid binding idempotency keys to a task
+                # when non-canonical payload fields differ from the original accepted payload.
+                if existing_task.payload_signature == payload_signature:
+                    self.screenshot_task_id_by_owner_job_idempotency[(owner_id, job_id, payload.idempotency_key)] = (
+                        existing_task.id
+                    )
+            return self._copy_screenshot_task_record(existing_task), True
+
+        now = datetime.now(UTC)
+        task = ScreenshotTaskRecord(
+            id=f"screenshot-task-{uuid4()}",
+            owner_id=owner_id,
+            job_id=job_id,
+            instruction_id=payload.instruction_id,
+            instruction_version_id=payload.instruction_version_id,
+            operation=ScreenshotOperation.EXTRACT,
+            status=ScreenshotTaskStatus.PENDING,
+            timestamp_ms=payload.timestamp_ms,
+            offset_ms=payload.offset_ms,
+            strategy=payload.strategy,
+            image_format=payload.format.value,
+            anchor_id=payload.anchor_id,
+            block_id=payload.block_id,
+            char_range=payload.char_range.model_copy(deep=True) if payload.char_range is not None else None,
+            idempotency_key=payload.idempotency_key,
+            canonical_key=canonical_key,
+            payload_signature=payload_signature,
+            requested_at=now,
+            updated_at=now,
+        )
+        self.screenshot_tasks_by_id[task.id] = task
+        self.screenshot_task_id_by_canonical_key[canonical_key] = task.id
+        if payload.idempotency_key is not None:
+            self.screenshot_task_id_by_owner_job_idempotency[(owner_id, job_id, payload.idempotency_key)] = task.id
+        self.screenshot_task_write_count += 1
+        return self._copy_screenshot_task_record(task), False
+
+    def create_screenshot_replace_task(
+        self,
+        *,
+        owner_id: str,
+        anchor_id: str,
+        job_id: str,
+        instruction_id: str,
+        payload: ScreenshotReplaceRequest,
+    ) -> tuple[ScreenshotTaskRecord, bool]:
+        anchor = self.screenshot_anchors_by_id.get(anchor_id)
+        if anchor is None or anchor.owner_id != owner_id:
+            raise ValueError("screenshot anchor not found")
+        if anchor.job_id != job_id or anchor.instruction_id != instruction_id:
+            raise ValueError("screenshot anchor context mismatch")
+
+        canonical_key = self.build_screenshot_extraction_canonical_key(
+            job_id=job_id,
+            instruction_version_id=payload.instruction_version_id,
+            timestamp_ms=payload.timestamp_ms,
+            offset_ms=payload.offset_ms,
+            strategy=payload.strategy,
+            image_format=payload.format,
+        )
+        payload_signature = self._build_screenshot_replace_payload_signature(payload=payload)
+        current_active_asset = (
+            self.screenshot_assets_by_id.get(anchor.active_asset_id) if anchor.active_asset_id is not None else None
+        )
+        current_active_extraction_key = current_active_asset.extraction_key if current_active_asset is not None else None
+
+        if payload.idempotency_key is not None:
+            request_key = (owner_id, anchor_id, payload.idempotency_key)
+            existing_task_id = self.screenshot_replace_task_id_by_owner_anchor_idempotency.get(request_key)
+            if existing_task_id is not None:
+                existing_task = self.screenshot_tasks_by_id[existing_task_id]
+                if existing_task.payload_signature != payload_signature:
+                    raise ValueError("duplicate idempotency_key payload differs from first accepted request")
+                return self._copy_screenshot_task_record(existing_task), True
+
+        existing_task_id = self.screenshot_replace_task_id_by_anchor_canonical_key.get((anchor_id, canonical_key))
+        if existing_task_id is not None:
+            existing_task = self.screenshot_tasks_by_id[existing_task_id]
+            # If anchor moved to a different active extraction key after a previous SUCCEEDED
+            # replacement, allow creating a new replacement task for this historical key.
+            should_replay = not (
+                existing_task.status is ScreenshotTaskStatus.SUCCEEDED and current_active_extraction_key != canonical_key
+            )
+            if should_replay:
+                if payload.idempotency_key is not None and existing_task.payload_signature == payload_signature:
+                    self.screenshot_replace_task_id_by_owner_anchor_idempotency[(owner_id, anchor_id, payload.idempotency_key)] = (
+                        existing_task.id
+                    )
+                return self._copy_screenshot_task_record(existing_task), True
+
+        if current_active_extraction_key == canonical_key:
+            # State-equivalent replay: persist a replace task snapshot but do not mutate asset versions.
+            now = datetime.now(UTC)
+            noop_task = ScreenshotTaskRecord(
+                id=f"screenshot-task-{uuid4()}",
+                owner_id=owner_id,
+                job_id=job_id,
+                instruction_id=instruction_id,
+                instruction_version_id=payload.instruction_version_id,
+                operation=ScreenshotOperation.REPLACE,
+                status=ScreenshotTaskStatus.SUCCEEDED,
+                timestamp_ms=payload.timestamp_ms,
+                offset_ms=payload.offset_ms,
+                strategy=payload.strategy,
+                image_format=payload.format.value,
+                anchor_id=anchor_id,
+                block_id=None,
+                char_range=None,
+                idempotency_key=payload.idempotency_key,
+                canonical_key=canonical_key,
+                payload_signature=payload_signature,
+                asset_id=anchor.active_asset_id,
+                requested_at=now,
+                updated_at=now,
+            )
+            self.screenshot_tasks_by_id[noop_task.id] = noop_task
+            self.screenshot_replace_task_id_by_anchor_canonical_key[(anchor_id, canonical_key)] = noop_task.id
+            if payload.idempotency_key is not None:
+                self.screenshot_replace_task_id_by_owner_anchor_idempotency[(owner_id, anchor_id, payload.idempotency_key)] = (
+                    noop_task.id
+                )
+            self.screenshot_task_write_count += 1
+            return self._copy_screenshot_task_record(noop_task), True
+
+        now = datetime.now(UTC)
+        task = ScreenshotTaskRecord(
+            id=f"screenshot-task-{uuid4()}",
+            owner_id=owner_id,
+            job_id=job_id,
+            instruction_id=instruction_id,
+            instruction_version_id=payload.instruction_version_id,
+            operation=ScreenshotOperation.REPLACE,
+            status=ScreenshotTaskStatus.PENDING,
+            timestamp_ms=payload.timestamp_ms,
+            offset_ms=payload.offset_ms,
+            strategy=payload.strategy,
+            image_format=payload.format.value,
+            anchor_id=anchor_id,
+            block_id=None,
+            char_range=None,
+            idempotency_key=payload.idempotency_key,
+            canonical_key=canonical_key,
+            payload_signature=payload_signature,
+            requested_at=now,
+            updated_at=now,
+        )
+        self.screenshot_tasks_by_id[task.id] = task
+        self.screenshot_replace_task_id_by_anchor_canonical_key[(anchor_id, canonical_key)] = task.id
+        if payload.idempotency_key is not None:
+            self.screenshot_replace_task_id_by_owner_anchor_idempotency[(owner_id, anchor_id, payload.idempotency_key)] = (
+                task.id
+            )
+        self.screenshot_task_write_count += 1
+        return self._copy_screenshot_task_record(task), False
+
+    def get_screenshot_anchor_for_owner(self, *, owner_id: str, anchor_id: str) -> ScreenshotAnchorRecord | None:
+        anchor = self.screenshot_anchors_by_id.get(anchor_id)
+        if anchor is None or anchor.owner_id != owner_id:
+            return None
+        return self._copy_screenshot_anchor_record(anchor)
+
+    def create_screenshot_anchor(
+        self,
+        *,
+        owner_id: str,
+        job_id: str,
+        instruction_id: str,
+        instruction_version_id: str,
+        addressing_type: Literal["block_id", "char_range"],
+        addressing_block_id: str | None,
+        addressing_char_range: CharRange | None,
+        addressing_strategy: str,
+    ) -> ScreenshotAnchorRecord:
+        now = datetime.now(UTC)
+        anchor = ScreenshotAnchorRecord(
+            anchor_id=f"anchor-{uuid4()}",
+            owner_id=owner_id,
+            job_id=job_id,
+            instruction_id=instruction_id,
+            instruction_version_id=instruction_version_id,
+            active_asset_id=None,
+            latest_asset_version=0,
+            created_at=now,
+            updated_at=now,
+            addressing_type=addressing_type,
+            addressing_block_id=addressing_block_id,
+            addressing_char_range=addressing_char_range.model_copy(deep=True)
+            if addressing_char_range is not None
+            else None,
+            addressing_strategy=addressing_strategy,
+        )
+        self.screenshot_anchors_by_id[anchor.anchor_id] = anchor
+        self.screenshot_asset_ids_by_anchor.setdefault(anchor.anchor_id, [])
+        return self._copy_screenshot_anchor_record(anchor)
+
+    def list_screenshot_anchors_for_owner_instruction(
+        self,
+        *,
+        owner_id: str,
+        instruction_id: str,
+        instruction_version_id: str | None = None,
+    ) -> list[ScreenshotAnchorRecord]:
+        anchors: list[ScreenshotAnchorRecord] = []
+        for anchor in self.screenshot_anchors_by_id.values():
+            if anchor.owner_id != owner_id or anchor.instruction_id != instruction_id:
+                continue
+            if instruction_version_id is not None and anchor.instruction_version_id != instruction_version_id:
+                continue
+            anchors.append(self._copy_screenshot_anchor_record(anchor))
+
+        anchors.sort(key=lambda record: (record.created_at, record.anchor_id))
+        return anchors
+
+    def get_screenshot_task_for_owner(self, *, owner_id: str, task_id: str) -> ScreenshotTaskRecord | None:
+        task = self.screenshot_tasks_by_id.get(task_id)
+        if task is None or task.owner_id != owner_id:
+            return None
+        return self._copy_screenshot_task_record(task)
+
+    def get_screenshot_asset_for_owner(self, *, owner_id: str, asset_id: str) -> ScreenshotAssetRecord | None:
+        asset = self.screenshot_assets_by_id.get(asset_id)
+        if asset is None or asset.owner_id != owner_id:
+            return None
+        return self._copy_screenshot_asset_record(asset)
+
+    def list_screenshot_assets_for_owner_anchor(
+        self,
+        *,
+        owner_id: str,
+        anchor_id: str,
+        include_deleted_assets: bool = True,
+    ) -> list[ScreenshotAssetRecord]:
+        anchor = self.screenshot_anchors_by_id.get(anchor_id)
+        if anchor is None or anchor.owner_id != owner_id:
+            return []
+
+        assets: list[ScreenshotAssetRecord] = []
+        for asset_id in self.screenshot_asset_ids_by_anchor.get(anchor_id, []):
+            asset = self.screenshot_assets_by_id.get(asset_id)
+            if asset is None or asset.owner_id != owner_id:
+                continue
+            if not include_deleted_assets and asset.is_deleted:
+                continue
+            assets.append(self._copy_screenshot_asset_record(asset))
+        assets.sort(key=lambda record: (record.version, record.created_at, record.asset_id))
+        return assets
+
+    def create_custom_upload_ticket(
+        self,
+        *,
+        owner_id: str,
+        job_id: str,
+        payload: CreateCustomUploadRequest,
+    ) -> CustomUploadRecord:
+        if payload.mime_type.value not in _CUSTOM_UPLOAD_ALLOWED_MIME_TYPES:
+            raise ValueError("unsupported mime type")
+        if payload.size_bytes > _CUSTOM_UPLOAD_MAX_SIZE_BYTES:
+            raise ValueError("upload size exceeds limit")
+        normalized_filename = self._normalize_custom_upload_filename(payload.filename)
+
+        now = datetime.now(UTC)
+        upload_id = f"upload-{uuid4()}"
+        expires_at = now + timedelta(minutes=15)
+        ticket = CustomUploadRecord(
+            upload_id=upload_id,
+            owner_id=owner_id,
+            job_id=job_id,
+            filename=normalized_filename,
+            requested_mime_type=payload.mime_type.value,
+            requested_size_bytes=payload.size_bytes,
+            requested_checksum_sha256=payload.checksum_sha256,
+            upload_url=self._build_custom_upload_url(
+                upload_id=upload_id,
+                owner_id=owner_id,
+                job_id=job_id,
+                expires_at=expires_at,
+            ),
+            expires_at=expires_at,
+            max_size_bytes=_CUSTOM_UPLOAD_MAX_SIZE_BYTES,
+            allowed_mime_types=_CUSTOM_UPLOAD_ALLOWED_MIME_TYPES,
+        )
+        self.custom_uploads_by_id[upload_id] = ticket
+        return self._copy_custom_upload_record(ticket)
+
+    def get_custom_upload_for_owner(
+        self,
+        *,
+        owner_id: str,
+        job_id: str,
+        upload_id: str,
+    ) -> CustomUploadRecord | None:
+        upload = self.custom_uploads_by_id.get(upload_id)
+        if upload is None or upload.owner_id != owner_id or upload.job_id != job_id:
+            return None
+        return self._copy_custom_upload_record(upload)
+
+    def confirm_custom_upload(
+        self,
+        *,
+        owner_id: str,
+        job_id: str,
+        upload_id: str,
+        payload: ConfirmCustomUploadRequest,
+    ) -> tuple[ScreenshotAssetRecord, bool]:
+        upload = self.custom_uploads_by_id.get(upload_id)
+        if upload is None or upload.owner_id != owner_id or upload.job_id != job_id:
+            raise ValueError("upload not found")
+        now = datetime.now(UTC)
+        if payload.mime_type.value not in upload.allowed_mime_types:
+            raise ValueError("unsupported mime type")
+        if payload.size_bytes > upload.max_size_bytes:
+            raise ValueError("upload size exceeds limit")
+        if payload.mime_type.value != upload.requested_mime_type:
+            raise ValueError("upload mime mismatch")
+        if payload.size_bytes != upload.requested_size_bytes:
+            raise ValueError("upload size mismatch")
+        if payload.checksum_sha256 != upload.requested_checksum_sha256:
+            raise ValueError("upload checksum mismatch")
+
+        if not upload.confirmed and now > upload.expires_at:
+            raise ValueError("upload ticket expired")
+        self._validate_custom_upload_ticket_signature(
+            upload=upload,
+            require_not_expired=not upload.confirmed,
+            now=now,
+        )
+
+        if upload.confirmed:
+            if (
+                upload.confirmed_mime_type != payload.mime_type.value
+                or upload.confirmed_size_bytes != payload.size_bytes
+                or upload.confirmed_checksum_sha256 != payload.checksum_sha256
+                or upload.confirmed_width != payload.width
+                or upload.confirmed_height != payload.height
+            ):
+                raise ValueError("upload confirmation payload differs from first accepted payload")
+            existing_asset = self.screenshot_assets_by_id.get(upload.confirmed_asset_id or "")
+            if existing_asset is None or existing_asset.owner_id != owner_id:
+                raise ValueError("upload confirmed asset not found")
+            return self._copy_screenshot_asset_record(existing_asset), True
+
+        confirmed_asset_id = f"asset-{uuid4()}"
+        synthetic_anchor_id = f"upload-{upload.upload_id}"
+        extension = self._resolve_custom_upload_extension(mime_type=payload.mime_type.value)
+        confirmed_image_uri = f"s3://bucket/uploads/{upload.upload_id}/original{extension}"
+        confirmed_asset = ScreenshotAssetRecord(
+            asset_id=confirmed_asset_id,
+            anchor_id=synthetic_anchor_id,
+            owner_id=owner_id,
+            job_id=job_id,
+            version=1,
+            previous_asset_id=None,
+            extraction_key=None,
+            kind="UPLOADED",
+            image_uri=confirmed_image_uri,
+            mime_type=payload.mime_type.value,
+            width=payload.width,
+            height=payload.height,
+            checksum_sha256=payload.checksum_sha256,
+            upload_id=upload.upload_id,
+            ops_hash=None,
+            rendered_from_asset_id=None,
+            is_deleted=False,
+            extraction_parameters={"upload_id": upload.upload_id, "filename": upload.filename},
+            created_at=now,
+        )
+        self.screenshot_assets_by_id[confirmed_asset_id] = confirmed_asset
+        self.screenshot_asset_ids_by_anchor.setdefault(synthetic_anchor_id, []).append(confirmed_asset_id)
+
+        upload.confirmed = True
+        upload.confirmed_mime_type = payload.mime_type.value
+        upload.confirmed_size_bytes = payload.size_bytes
+        upload.confirmed_checksum_sha256 = payload.checksum_sha256
+        upload.confirmed_width = payload.width
+        upload.confirmed_height = payload.height
+        upload.confirmed_asset_id = confirmed_asset_id
+        upload.confirmed_image_uri = confirmed_image_uri
+        upload.confirmed_at = now
+
+        return self._copy_screenshot_asset_record(confirmed_asset), False
+
+    def attach_confirmed_upload_to_anchor(
+        self,
+        *,
+        owner_id: str,
+        anchor_id: str,
+        instruction_version_id: str,
+        upload_id: str,
+        idempotency_key: str | None,
+        payload_signature: str,
+    ) -> tuple[ScreenshotAnchorRecord, bool]:
+        anchor = self.screenshot_anchors_by_id.get(anchor_id)
+        if anchor is None or anchor.owner_id != owner_id:
+            raise ValueError("screenshot anchor not found")
+
+        upload = self.custom_uploads_by_id.get(upload_id)
+        if upload is None or upload.owner_id != owner_id or upload.job_id != anchor.job_id or not upload.confirmed:
+            raise ValueError("confirmed upload not found")
+
+        if idempotency_key is not None:
+            request_key = (owner_id, anchor_id, idempotency_key)
+            existing = self.attach_upload_replay_by_owner_anchor_idempotency.get(request_key)
+            if existing is not None:
+                if existing.payload_signature != payload_signature:
+                    raise ValueError("duplicate idempotency_key payload differs from first accepted request")
+                replay_anchor = self._copy_screenshot_anchor_record(anchor)
+                replay_anchor.active_asset_id = existing.asset_id
+                replay_anchor.instruction_version_id = existing.instruction_version_id
+                replay_anchor.updated_at = existing.updated_at
+                return replay_anchor, True
+
+        source_asset_id = upload.confirmed_asset_id
+        if source_asset_id is None:
+            raise ValueError("confirmed upload not found")
+        source_asset = self.screenshot_assets_by_id.get(source_asset_id)
+        if source_asset is None or source_asset.owner_id != owner_id:
+            raise ValueError("confirmed upload asset not found")
+
+        now = datetime.now(UTC)
+        previous_asset_id = anchor.active_asset_id
+        next_version = anchor.latest_asset_version + 1
+        if previous_asset_id is not None:
+            previous_asset = self.screenshot_assets_by_id.get(previous_asset_id)
+            if previous_asset is not None and previous_asset.version >= next_version:
+                next_version = previous_asset.version + 1
+
+        asset_id = f"asset-{uuid4()}"
+        attached_asset = ScreenshotAssetRecord(
+            asset_id=asset_id,
+            anchor_id=anchor_id,
+            owner_id=owner_id,
+            job_id=anchor.job_id,
+            version=next_version,
+            previous_asset_id=previous_asset_id,
+            extraction_key=None,
+            kind="UPLOADED",
+            image_uri=source_asset.image_uri,
+            mime_type=source_asset.mime_type,
+            width=source_asset.width,
+            height=source_asset.height,
+            checksum_sha256=source_asset.checksum_sha256,
+            upload_id=upload.upload_id,
+            ops_hash=None,
+            rendered_from_asset_id=None,
+            is_deleted=False,
+            extraction_parameters={"upload_id": upload.upload_id},
+            created_at=now,
+        )
+        self.screenshot_assets_by_id[asset_id] = attached_asset
+        self.screenshot_asset_ids_by_anchor.setdefault(anchor_id, []).append(asset_id)
+        anchor.active_asset_id = asset_id
+        anchor.latest_asset_version = next_version
+        anchor.instruction_version_id = instruction_version_id
+        anchor.updated_at = now
+
+        if idempotency_key is not None:
+            request_key = (owner_id, anchor_id, idempotency_key)
+            self.attach_upload_replay_by_owner_anchor_idempotency[request_key] = AttachUploadReplayRecord(
+                asset_id=asset_id,
+                payload_signature=payload_signature,
+                instruction_version_id=instruction_version_id,
+                updated_at=now,
+            )
+
+        return self._copy_screenshot_anchor_record(anchor), False
+
+    def apply_screenshot_annotations(
+        self,
+        *,
+        owner_id: str,
+        anchor_id: str,
+        base_asset_id: str,
+        operations: list[dict[str, Any]],
+        idempotency_key: str | None,
+    ) -> ScreenshotAnnotationResultRecord:
+        anchor = self.screenshot_anchors_by_id.get(anchor_id)
+        if anchor is None or anchor.owner_id != owner_id:
+            raise ValueError("screenshot anchor not found")
+
+        base_asset = self.screenshot_assets_by_id.get(base_asset_id)
+        if base_asset is None or base_asset.owner_id != owner_id or base_asset.is_deleted:
+            raise ValueError("screenshot asset not found")
+        if base_asset.anchor_id != anchor_id or base_asset.job_id != anchor.job_id:
+            raise ValueError("screenshot asset not linked to anchor")
+
+        normalized_operations = self._normalize_annotation_operations(operations=operations)
+        ops_hash = self.build_annotation_ops_hash(
+            anchor_id=anchor_id,
+            base_asset_id=base_asset_id,
+            normalized_operations=normalized_operations,
+        )
+        payload_signature = self._build_annotation_payload_signature(
+            base_asset_id=base_asset_id,
+            normalized_operations=normalized_operations,
+        )
+
+        if idempotency_key is not None:
+            request_key = (owner_id, anchor_id, idempotency_key)
+            existing_replay = self.screenshot_annotation_replay_by_owner_anchor_idempotency.get(request_key)
+            if existing_replay is not None:
+                if existing_replay.payload_signature != payload_signature:
+                    raise ValueError("duplicate idempotency_key payload differs from first accepted request")
+                return ScreenshotAnnotationResultRecord(
+                    anchor_id=existing_replay.anchor_id,
+                    base_asset_id=existing_replay.base_asset_id,
+                    ops_hash=existing_replay.ops_hash,
+                    rendered_asset_id=existing_replay.rendered_asset_id,
+                    active_asset_id=existing_replay.active_asset_id,
+                    replayed=True,
+                )
+
+        annotation_key = (anchor_id, base_asset_id, ops_hash)
+        existing_asset_id = self.screenshot_annotation_asset_id_by_anchor_base_ops_hash.get(annotation_key)
+        if existing_asset_id is not None:
+            existing_asset = self.screenshot_assets_by_id.get(existing_asset_id)
+            if existing_asset is not None and existing_asset.owner_id == owner_id and not existing_asset.is_deleted:
+                now = datetime.now(UTC)
+                if anchor.active_asset_id != existing_asset_id:
+                    anchor.active_asset_id = existing_asset_id
+                    anchor.updated_at = now
+                active_asset_id = anchor.active_asset_id or existing_asset_id
+                result = ScreenshotAnnotationResultRecord(
+                    anchor_id=anchor_id,
+                    base_asset_id=base_asset_id,
+                    ops_hash=ops_hash,
+                    rendered_asset_id=existing_asset_id,
+                    active_asset_id=active_asset_id,
+                    replayed=True,
+                )
+                if idempotency_key is not None:
+                    self.screenshot_annotation_replay_by_owner_anchor_idempotency[(owner_id, anchor_id, idempotency_key)] = (
+                        AnnotationReplayRecord(
+                            anchor_id=result.anchor_id,
+                            base_asset_id=result.base_asset_id,
+                            ops_hash=result.ops_hash,
+                            rendered_asset_id=result.rendered_asset_id,
+                            active_asset_id=result.active_asset_id,
+                            payload_signature=payload_signature,
+                        )
+                    )
+                return result
+            self.screenshot_annotation_asset_id_by_anchor_base_ops_hash.pop(annotation_key, None)
+
+        if self.annotation_render_failure_message is not None:
+            message = self.annotation_render_failure_message
+            self.annotation_render_failure_message = None
+            raise ValueError(message)
+
+        now = datetime.now(UTC)
+        previous_asset_id = anchor.active_asset_id
+        next_version = anchor.latest_asset_version + 1
+        if previous_asset_id is not None:
+            previous_asset = self.screenshot_assets_by_id.get(previous_asset_id)
+            if previous_asset is not None and previous_asset.version >= next_version:
+                next_version = previous_asset.version + 1
+
+        rendered_asset_id = self._build_annotation_asset_id(
+            anchor_id=anchor_id,
+            base_asset_id=base_asset_id,
+            ops_hash=ops_hash,
+        )
+        existing_rendered_asset = self.screenshot_assets_by_id.get(rendered_asset_id)
+        if existing_rendered_asset is not None and not (
+            existing_rendered_asset.anchor_id == anchor_id
+            and existing_rendered_asset.rendered_from_asset_id == base_asset_id
+            and existing_rendered_asset.ops_hash == ops_hash
+        ):
+            raise ValueError("annotation render collision")
+
+        self.screenshot_assets_by_id[rendered_asset_id] = ScreenshotAssetRecord(
+            asset_id=rendered_asset_id,
+            anchor_id=anchor_id,
+            owner_id=owner_id,
+            job_id=anchor.job_id,
+            version=next_version,
+            previous_asset_id=previous_asset_id,
+            extraction_key=None,
+            kind="ANNOTATED",
+            image_uri=self._build_annotation_render_image_uri(base_asset=base_asset, ops_hash=ops_hash),
+            mime_type=base_asset.mime_type,
+            width=base_asset.width,
+            height=base_asset.height,
+            checksum_sha256=None,
+            upload_id=None,
+            ops_hash=ops_hash,
+            rendered_from_asset_id=base_asset_id,
+            is_deleted=False,
+            extraction_parameters={
+                "base_asset_id": base_asset_id,
+                "operations": json.loads(
+                    json.dumps(
+                        normalized_operations,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                        allow_nan=False,
+                    )
+                ),
+            },
+            created_at=now,
+        )
+        self.screenshot_asset_ids_by_anchor.setdefault(anchor_id, []).append(rendered_asset_id)
+        anchor.active_asset_id = rendered_asset_id
+        anchor.latest_asset_version = next_version
+        anchor.updated_at = now
+        self.screenshot_annotation_asset_id_by_anchor_base_ops_hash[annotation_key] = rendered_asset_id
+
+        result = ScreenshotAnnotationResultRecord(
+            anchor_id=anchor_id,
+            base_asset_id=base_asset_id,
+            ops_hash=ops_hash,
+            rendered_asset_id=rendered_asset_id,
+            active_asset_id=rendered_asset_id,
+            replayed=False,
+        )
+        if idempotency_key is not None:
+            self.screenshot_annotation_replay_by_owner_anchor_idempotency[(owner_id, anchor_id, idempotency_key)] = (
+                AnnotationReplayRecord(
+                    anchor_id=result.anchor_id,
+                    base_asset_id=result.base_asset_id,
+                    ops_hash=result.ops_hash,
+                    rendered_asset_id=result.rendered_asset_id,
+                    active_asset_id=result.active_asset_id,
+                    payload_signature=payload_signature,
+                )
+            )
+        return result
+
+    def soft_delete_screenshot_asset(
+        self,
+        *,
+        owner_id: str,
+        anchor_id: str,
+        asset_id: str,
+    ) -> tuple[ScreenshotAnchorRecord, ScreenshotAssetRecord, bool]:
+        anchor = self.screenshot_anchors_by_id.get(anchor_id)
+        if anchor is None or anchor.owner_id != owner_id:
+            raise ValueError("screenshot anchor not found")
+
+        asset = self.screenshot_assets_by_id.get(asset_id)
+        if asset is None or asset.owner_id != owner_id:
+            raise ValueError("screenshot asset not found")
+        if asset.anchor_id != anchor_id:
+            raise ValueError("screenshot asset not linked to anchor")
+
+        if asset.is_deleted:
+            return self._copy_screenshot_anchor_record(anchor), self._copy_screenshot_asset_record(asset), True
+
+        asset.is_deleted = True
+        if anchor.active_asset_id == asset_id:
+            anchor.active_asset_id = self._resolve_previous_active_asset_id(
+                anchor_id=anchor_id,
+                previous_asset_id=asset.previous_asset_id,
+            )
+        anchor.updated_at = datetime.now(UTC)
+        return self._copy_screenshot_anchor_record(anchor), self._copy_screenshot_asset_record(asset), False
+
+    def complete_screenshot_task_success(
+        self,
+        *,
+        task_id: str,
+        image_uri: str,
+        width: int,
+        height: int,
+        anchor_id: str | None = None,
+        asset_id: str | None = None,
+    ) -> ScreenshotTaskRecord:
+        task = self.screenshot_tasks_by_id.get(task_id)
+        if task is None:
+            raise ValueError("screenshot task not found")
+        if task.status is ScreenshotTaskStatus.SUCCEEDED:
+            return self._copy_screenshot_task_record(task)
+
+        now = datetime.now(UTC)
+        resolved_anchor_id = anchor_id or task.anchor_id or f"anchor-{uuid4()}"
+        resolved_asset_id = asset_id or task.asset_id or f"asset-{uuid4()}"
+
+        anchor_record = self.screenshot_anchors_by_id.get(resolved_anchor_id)
+        if anchor_record is None:
+            addressing_type: Literal["block_id", "char_range"] = "char_range" if task.char_range is not None else "block_id"
+            anchor_record = ScreenshotAnchorRecord(
+                anchor_id=resolved_anchor_id,
+                owner_id=task.owner_id,
+                job_id=task.job_id,
+                instruction_id=task.instruction_id,
+                instruction_version_id=task.instruction_version_id,
+                active_asset_id=None,
+                latest_asset_version=0,
+                created_at=now,
+                updated_at=now,
+                addressing_type=addressing_type,
+                addressing_block_id=task.block_id,
+                addressing_char_range=task.char_range.model_copy(deep=True) if task.char_range is not None else None,
+                addressing_strategy=task.strategy.value,
+            )
+            self.screenshot_anchors_by_id[resolved_anchor_id] = anchor_record
+        elif anchor_record.owner_id != task.owner_id:
+            raise ValueError("screenshot anchor owner mismatch")
+
+        previous_asset_id = anchor_record.active_asset_id
+        next_version = anchor_record.latest_asset_version + 1
+        if previous_asset_id is not None:
+            previous_asset = self.screenshot_assets_by_id.get(previous_asset_id)
+            if previous_asset is not None and previous_asset.version >= next_version:
+                next_version = previous_asset.version + 1
+
+        if task.operation is ScreenshotOperation.REPLACE and previous_asset_id is None:
+            raise ValueError("screenshot anchor has no active asset to replace")
+
+        task.status = ScreenshotTaskStatus.SUCCEEDED
+        task.anchor_id = resolved_anchor_id
+        task.asset_id = resolved_asset_id
+        task.failure_code = None
+        task.failure_message = None
+        task.updated_at = now
+        self.screenshot_task_write_count += 1
+
+        extraction_parameters: dict[str, Any] = {
+            "instruction_id": task.instruction_id,
+            "instruction_version_id": task.instruction_version_id,
+            "timestamp_ms": task.timestamp_ms,
+            "offset_ms": task.offset_ms,
+            "strategy": task.strategy.value,
+            "format": task.image_format,
+        }
+        if task.block_id is not None:
+            extraction_parameters["block_id"] = task.block_id
+        if task.char_range is not None:
+            extraction_parameters["char_range"] = task.char_range.model_dump(mode="json")
+
+        self.screenshot_assets_by_id[resolved_asset_id] = ScreenshotAssetRecord(
+            asset_id=resolved_asset_id,
+            anchor_id=resolved_anchor_id,
+            owner_id=task.owner_id,
+            job_id=task.job_id,
+            version=next_version,
+            previous_asset_id=previous_asset_id,
+            extraction_key=task.canonical_key,
+            kind="EXTRACTED",
+            image_uri=image_uri,
+            mime_type=self._resolve_screenshot_mime_type(image_format=task.image_format),
+            width=width,
+            height=height,
+            checksum_sha256=None,
+            upload_id=None,
+            ops_hash=None,
+            rendered_from_asset_id=None,
+            is_deleted=False,
+            extraction_parameters=extraction_parameters,
+            created_at=now,
+        )
+        self.screenshot_asset_ids_by_anchor.setdefault(resolved_anchor_id, []).append(resolved_asset_id)
+        anchor_record.active_asset_id = resolved_asset_id
+        anchor_record.latest_asset_version = next_version
+        anchor_record.instruction_version_id = task.instruction_version_id
+        anchor_record.updated_at = now
+        return self._copy_screenshot_task_record(task)
+
+    def fail_screenshot_task(
+        self,
+        *,
+        task_id: str,
+        failure_code: str,
+        failure_message: str | None = None,
+    ) -> ScreenshotTaskRecord:
+        task = self.screenshot_tasks_by_id.get(task_id)
+        if task is None:
+            raise ValueError("screenshot task not found")
+
+        task.status = ScreenshotTaskStatus.FAILED
+        task.failure_code = failure_code
+        task.failure_message = self._sanitize_screenshot_failure_message(failure_message)
+        task.updated_at = datetime.now(UTC)
+        self.screenshot_task_write_count += 1
+        return self._copy_screenshot_task_record(task)
+
     def persist_retry_metadata(
         self,
         *,
@@ -591,6 +1796,393 @@ class InMemoryStore:
         self.workflow_dispatches_by_job[job_id] = dispatch
         self.dispatch_write_count += 1
         return dispatch
+
+    @staticmethod
+    def _build_regenerate_payload_signature(
+        *,
+        base_version: int,
+        selection: RegenerateSelection,
+        context: str | None,
+        model_profile: str | None,
+        prompt_template_id: str | None,
+        prompt_params_ref: str | None,
+    ) -> str:
+        signature_payload = {
+            "base_version": base_version,
+            "selection": selection.model_dump(mode="json", exclude_none=True),
+            "context": context,
+            "model_profile": model_profile,
+            "prompt_template_id": prompt_template_id,
+            "prompt_params_ref": prompt_params_ref,
+        }
+        return json.dumps(signature_payload, sort_keys=True, separators=(",", ":"))
+
+    def _resolve_previous_active_asset_id(self, *, anchor_id: str, previous_asset_id: str | None) -> str | None:
+        candidate_id = previous_asset_id
+        visited: set[str] = set()
+        while candidate_id is not None:
+            if candidate_id in visited:
+                return None
+            visited.add(candidate_id)
+            candidate = self.screenshot_assets_by_id.get(candidate_id)
+            if candidate is None or candidate.anchor_id != anchor_id:
+                return None
+            if not candidate.is_deleted:
+                return candidate.asset_id
+            candidate_id = candidate.previous_asset_id
+        return None
+
+    @staticmethod
+    def build_screenshot_extraction_canonical_key(
+        *,
+        job_id: str,
+        instruction_version_id: str,
+        timestamp_ms: int,
+        offset_ms: int,
+        strategy: ScreenshotStrategy,
+        image_format: ScreenshotFormat,
+    ) -> str:
+        return "|".join(
+            (
+                job_id,
+                instruction_version_id,
+                str(timestamp_ms),
+                str(offset_ms),
+                strategy.value,
+                image_format.value,
+            )
+        )
+
+    @classmethod
+    def build_annotation_ops_hash(
+        cls,
+        *,
+        anchor_id: str,
+        base_asset_id: str,
+        normalized_operations: list[dict[str, Any]],
+    ) -> str:
+        payload = {
+            "anchor_id": anchor_id,
+            "base_asset_id": base_asset_id,
+            "operations": normalized_operations,
+        }
+        encoded = json.dumps(
+            payload,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode("utf-8")
+        return hashlib.sha256(encoded).hexdigest()
+
+    @classmethod
+    def _build_annotation_payload_signature(
+        cls,
+        *,
+        base_asset_id: str,
+        normalized_operations: list[dict[str, Any]],
+    ) -> str:
+        payload = {
+            "base_asset_id": base_asset_id,
+            "operations": normalized_operations,
+        }
+        return json.dumps(
+            payload,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        )
+
+    @staticmethod
+    def _build_annotation_asset_id(*, anchor_id: str, base_asset_id: str, ops_hash: str) -> str:
+        material = f"{anchor_id}|{base_asset_id}|{ops_hash}".encode("utf-8")
+        return f"asset-{hashlib.sha256(material).hexdigest()[:32]}"
+
+    @staticmethod
+    def _build_annotation_render_image_uri(*, base_asset: ScreenshotAssetRecord, ops_hash: str) -> str:
+        extension = _CUSTOM_UPLOAD_MIME_TO_EXTENSION.get(base_asset.mime_type, ".png")
+        return f"s3://bucket/screenshots/annotated/{base_asset.anchor_id}/{ops_hash}{extension}"
+
+    @classmethod
+    def _normalize_annotation_operations(cls, *, operations: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        normalized_operations: list[dict[str, Any]] = []
+        for operation in operations:
+            op_type = operation.get("op_type")
+            geometry = operation.get("geometry")
+            style = operation.get("style")
+            if op_type not in _ANNOTATION_ALLOWED_OP_TYPES:
+                raise ValueError("invalid annotation operations")
+            if not isinstance(geometry, dict) or not isinstance(style, dict):
+                raise ValueError("invalid annotation operations")
+            normalized_operation = {
+                "op_type": op_type,
+                "geometry": cls._normalize_annotation_value(geometry),
+                "style": cls._normalize_annotation_value(style),
+            }
+            normalized_operations.append(normalized_operation)
+
+        if not normalized_operations:
+            raise ValueError("invalid annotation operations")
+
+        normalized_operations.sort(
+            key=lambda operation: json.dumps(
+                operation,
+                sort_keys=True,
+                separators=(",", ":"),
+                allow_nan=False,
+            )
+        )
+        return normalized_operations
+
+    @classmethod
+    def _normalize_annotation_value(cls, value: Any) -> Any:
+        if isinstance(value, dict):
+            normalized: dict[str, Any] = {}
+            for key in sorted(value.keys()):
+                if not isinstance(key, str):
+                    raise ValueError("invalid annotation operations")
+                normalized[key] = cls._normalize_annotation_value(value[key])
+            return normalized
+        if isinstance(value, list):
+            return [cls._normalize_annotation_value(item) for item in value]
+        if isinstance(value, bool) or isinstance(value, int) or isinstance(value, str) or value is None:
+            return value
+        if isinstance(value, float):
+            if math.isnan(value) or math.isinf(value):
+                raise ValueError("invalid annotation operations")
+            return value
+        raise ValueError("invalid annotation operations")
+
+    @staticmethod
+    def _build_screenshot_payload_signature(*, payload: ScreenshotExtractionRequest) -> str:
+        signature_payload = payload.model_dump(mode="json", exclude_none=True)
+        return json.dumps(signature_payload, sort_keys=True, separators=(",", ":"))
+
+    @staticmethod
+    def _build_screenshot_replace_payload_signature(*, payload: ScreenshotReplaceRequest) -> str:
+        signature_payload = payload.model_dump(mode="json", exclude_none=True)
+        return json.dumps(signature_payload, sort_keys=True, separators=(",", ":"))
+
+    @staticmethod
+    def _normalize_custom_upload_filename(filename: str) -> str:
+        normalized = filename.strip().replace("\\", "/").split("/")[-1]
+        if not normalized or normalized in {".", ".."}:
+            raise ValueError("invalid filename")
+        if len(normalized) > 255:
+            raise ValueError("filename too long")
+        if any(ord(char) < 32 for char in normalized):
+            raise ValueError("filename contains invalid characters")
+        return normalized
+
+    @classmethod
+    def _build_custom_upload_url(
+        cls,
+        *,
+        upload_id: str,
+        owner_id: str,
+        job_id: str,
+        expires_at: datetime,
+    ) -> str:
+        expires_epoch = int(expires_at.timestamp())
+        signature = cls._build_custom_upload_signature(
+            upload_id=upload_id,
+            owner_id=owner_id,
+            job_id=job_id,
+            expires_epoch=expires_epoch,
+        )
+        return (
+            f"{_CUSTOM_UPLOAD_URL_SCHEME}://{_CUSTOM_UPLOAD_URL_HOST}/{upload_id}"
+            f"?expires={expires_epoch}&sig={signature}"
+        )
+
+    @classmethod
+    def _build_custom_upload_signature(
+        cls,
+        *,
+        upload_id: str,
+        owner_id: str,
+        job_id: str,
+        expires_epoch: int,
+    ) -> str:
+        payload = f"{upload_id}|{owner_id}|{job_id}|{expires_epoch}".encode("utf-8")
+        return hmac.new(_CUSTOM_UPLOAD_SIGNING_KEY, payload, hashlib.sha256).hexdigest()
+
+    @classmethod
+    def _validate_custom_upload_ticket_signature(
+        cls,
+        *,
+        upload: CustomUploadRecord,
+        require_not_expired: bool,
+        now: datetime,
+    ) -> None:
+        parsed = urlparse(upload.upload_url)
+        if parsed.scheme != _CUSTOM_UPLOAD_URL_SCHEME or parsed.netloc != _CUSTOM_UPLOAD_URL_HOST:
+            raise ValueError("upload ticket signature invalid")
+        if parsed.path != f"/{upload.upload_id}":
+            raise ValueError("upload ticket signature invalid")
+
+        params = parse_qs(parsed.query, keep_blank_values=False)
+        expires_values = params.get("expires")
+        signature_values = params.get("sig")
+        if not expires_values or not signature_values:
+            raise ValueError("upload ticket signature invalid")
+        if len(expires_values) != 1 or len(signature_values) != 1:
+            raise ValueError("upload ticket signature invalid")
+
+        try:
+            expires_epoch = int(expires_values[0])
+        except ValueError as exc:
+            raise ValueError("upload ticket signature invalid") from exc
+
+        expected_expires_epoch = int(upload.expires_at.timestamp())
+        if expires_epoch != expected_expires_epoch:
+            raise ValueError("upload ticket signature invalid")
+        if require_not_expired and now.timestamp() > expires_epoch:
+            raise ValueError("upload ticket expired")
+
+        expected_signature = cls._build_custom_upload_signature(
+            upload_id=upload.upload_id,
+            owner_id=upload.owner_id,
+            job_id=upload.job_id,
+            expires_epoch=expires_epoch,
+        )
+        if not hmac.compare_digest(signature_values[0], expected_signature):
+            raise ValueError("upload ticket signature invalid")
+
+    @staticmethod
+    def _resolve_custom_upload_extension(*, mime_type: str) -> str:
+        return _CUSTOM_UPLOAD_MIME_TO_EXTENSION.get(mime_type, ".bin")
+
+    @staticmethod
+    def _resolve_screenshot_mime_type(*, image_format: str) -> str:
+        return _SCREENSHOT_FORMAT_TO_MIME_TYPE.get(image_format, ScreenshotMimeType.PNG.value)
+
+    @staticmethod
+    def _sanitize_regenerate_failure_message(message: str | None) -> str | None:
+        if message is None:
+            return None
+        return "Regenerate task failed."
+
+    @staticmethod
+    def _sanitize_screenshot_failure_message(message: str | None) -> str | None:
+        if message is None:
+            return None
+        return "Screenshot task failed."
+
+    @staticmethod
+    def _copy_regenerate_task_record(record: RegenerateTaskRecord) -> RegenerateTaskRecord:
+        return RegenerateTaskRecord(
+            id=record.id,
+            instruction_id=record.instruction_id,
+            owner_id=record.owner_id,
+            job_id=record.job_id,
+            status=record.status,
+            progress_pct=record.progress_pct,
+            instruction_version=record.instruction_version,
+            failure_code=record.failure_code,
+            failure_message=record.failure_message,
+            failed_stage=record.failed_stage,
+            provenance=record.provenance.model_copy(deep=True),
+            payload_signature=record.payload_signature,
+            client_request_id=record.client_request_id,
+            requested_at=record.requested_at,
+            updated_at=record.updated_at,
+        )
+
+    @staticmethod
+    def _copy_screenshot_task_record(record: ScreenshotTaskRecord) -> ScreenshotTaskRecord:
+        return ScreenshotTaskRecord(
+            id=record.id,
+            owner_id=record.owner_id,
+            job_id=record.job_id,
+            instruction_id=record.instruction_id,
+            instruction_version_id=record.instruction_version_id,
+            operation=record.operation,
+            status=record.status,
+            timestamp_ms=record.timestamp_ms,
+            offset_ms=record.offset_ms,
+            strategy=record.strategy,
+            image_format=record.image_format,
+            anchor_id=record.anchor_id,
+            block_id=record.block_id,
+            char_range=record.char_range.model_copy(deep=True) if record.char_range is not None else None,
+            idempotency_key=record.idempotency_key,
+            canonical_key=record.canonical_key,
+            payload_signature=record.payload_signature,
+            asset_id=record.asset_id,
+            failure_code=record.failure_code,
+            failure_message=record.failure_message,
+            requested_at=record.requested_at,
+            updated_at=record.updated_at,
+        )
+
+    @staticmethod
+    def _copy_screenshot_anchor_record(record: ScreenshotAnchorRecord) -> ScreenshotAnchorRecord:
+        return ScreenshotAnchorRecord(
+            anchor_id=record.anchor_id,
+            owner_id=record.owner_id,
+            job_id=record.job_id,
+            instruction_id=record.instruction_id,
+            instruction_version_id=record.instruction_version_id,
+            active_asset_id=record.active_asset_id,
+            latest_asset_version=record.latest_asset_version,
+            created_at=record.created_at,
+            updated_at=record.updated_at,
+            addressing_type=record.addressing_type,
+            addressing_block_id=record.addressing_block_id,
+            addressing_char_range=record.addressing_char_range.model_copy(deep=True)
+            if record.addressing_char_range is not None
+            else None,
+            addressing_strategy=record.addressing_strategy,
+        )
+
+    @staticmethod
+    def _copy_screenshot_asset_record(record: ScreenshotAssetRecord) -> ScreenshotAssetRecord:
+        return ScreenshotAssetRecord(
+            asset_id=record.asset_id,
+            anchor_id=record.anchor_id,
+            owner_id=record.owner_id,
+            job_id=record.job_id,
+            version=record.version,
+            previous_asset_id=record.previous_asset_id,
+            extraction_key=record.extraction_key,
+            kind=record.kind,
+            image_uri=record.image_uri,
+            mime_type=record.mime_type,
+            width=record.width,
+            height=record.height,
+            checksum_sha256=record.checksum_sha256,
+            upload_id=record.upload_id,
+            ops_hash=record.ops_hash,
+            rendered_from_asset_id=record.rendered_from_asset_id,
+            is_deleted=record.is_deleted,
+            extraction_parameters=dict(record.extraction_parameters),
+            created_at=record.created_at,
+        )
+
+    @staticmethod
+    def _copy_custom_upload_record(record: CustomUploadRecord) -> CustomUploadRecord:
+        return CustomUploadRecord(
+            upload_id=record.upload_id,
+            owner_id=record.owner_id,
+            job_id=record.job_id,
+            filename=record.filename,
+            requested_mime_type=record.requested_mime_type,
+            requested_size_bytes=record.requested_size_bytes,
+            requested_checksum_sha256=record.requested_checksum_sha256,
+            upload_url=record.upload_url,
+            expires_at=record.expires_at,
+            max_size_bytes=record.max_size_bytes,
+            allowed_mime_types=tuple(record.allowed_mime_types),
+            confirmed=record.confirmed,
+            confirmed_mime_type=record.confirmed_mime_type,
+            confirmed_size_bytes=record.confirmed_size_bytes,
+            confirmed_checksum_sha256=record.confirmed_checksum_sha256,
+            confirmed_width=record.confirmed_width,
+            confirmed_height=record.confirmed_height,
+            confirmed_asset_id=record.confirmed_asset_id,
+            confirmed_image_uri=record.confirmed_image_uri,
+            confirmed_at=record.confirmed_at,
+        )
 
     @staticmethod
     def _copy_instruction_record(record: InstructionRecord) -> InstructionRecord:

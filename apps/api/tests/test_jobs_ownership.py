@@ -13,7 +13,7 @@ from fastapi.testclient import TestClient
 from app.core.config import get_settings
 from app.errors import ApiError
 from app.main import create_app
-from app.repositories.memory import InMemoryStore
+from app.repositories.memory import ExportAnchorBindingRecord, InMemoryStore
 from app.schemas.job import (
     AnchorAddress,
     AnchorAddressType,
@@ -21,6 +21,10 @@ from app.schemas.job import (
     ArtifactManifest,
     ConfirmCustomUploadRequest,
     CreateCustomUploadRequest,
+    CreateExportRequest,
+    ExportAuditEventType,
+    ExportFormat,
+    ExportStatus,
     JobStatus,
     ScreenshotExtractionRequest,
     ScreenshotFormat,
@@ -3092,6 +3096,606 @@ class JobOwnershipApiTests(_SettingsEnvCase):
         self.assertEqual(context_mismatch.json(), {"code": "RESOURCE_NOT_FOUND", "message": "Resource not found"})
         self.assertEqual(len(store.screenshot_assets_by_id), before_asset_count)
 
+    def test_create_export_request_first_accepts_202_and_replays_as_200(self) -> None:
+        app = create_app()
+        client = TestClient(app)
+        store = app.state.store
+        owner_headers = {"Authorization": "Bearer test:owner-e1:editor"}
+
+        project = client.post("/api/v1/projects", headers=owner_headers, json={"name": "Owned"}).json()
+        created_job = client.post(f"/api/v1/projects/{project['id']}/jobs", headers=owner_headers).json()
+        store.create_instruction_version(
+            owner_id="owner-e1",
+            instruction_id="inst-e1",
+            job_id=created_job["id"],
+            version=1,
+            markdown="# Intro {#intro}",
+            model_profile_id="cloud-default",
+            prompt_template_id="prompt-template-v1",
+            prompt_params_ref="prompt-params-v1",
+        )
+
+        extracted = client.post(
+            f"/api/v1/jobs/{created_job['id']}/screenshots/extract",
+            headers=owner_headers,
+            json={"instruction_id": "inst-e1", "instruction_version_id": "1", "timestamp_ms": 12000},
+        )
+        self.assertEqual(extracted.status_code, 202)
+        store.complete_screenshot_task_success(
+            task_id=extracted.json()["task_id"],
+            image_uri="s3://bucket/screenshots/e1-base.png",
+            width=1200,
+            height=700,
+        )
+
+        before_export_writes = store.export_write_count
+        first = client.post(
+            f"/api/v1/jobs/{created_job['id']}/exports",
+            headers=owner_headers,
+            json={"format": "PDF", "instruction_version_id": "1"},
+        )
+        self.assertEqual(first.status_code, 202)
+        first_payload = first.json()
+        self.assertTrue(first_payload["id"].startswith("export-"))
+        self.assertEqual(first_payload["job_id"], created_job["id"])
+        self.assertEqual(first_payload["format"], "PDF")
+        self.assertEqual(first_payload["status"], "REQUESTED")
+        self.assertEqual(first_payload["instruction_version_id"], "1")
+        self.assertEqual(len(first_payload["screenshot_set_hash"]), 64)
+        self.assertEqual(first_payload["last_audit_event"], "EXPORT_REQUESTED")
+        self.assertEqual(first_payload["provenance"]["instruction_version_id"], "1")
+        self.assertEqual(first_payload["provenance"]["screenshot_set_hash"], first_payload["screenshot_set_hash"])
+        self.assertEqual(len(first_payload["provenance"]["anchors"]), 1)
+        self.assertEqual(store.export_write_count, before_export_writes + 1)
+        self.assertEqual(len(store.exports_by_id), 1)
+
+        replay = client.post(
+            f"/api/v1/jobs/{created_job['id']}/exports",
+            headers=owner_headers,
+            json={"format": "PDF", "instruction_version_id": "1"},
+        )
+        self.assertEqual(replay.status_code, 200)
+        replay_payload = replay.json()
+        self.assertEqual(replay_payload["id"], first_payload["id"])
+        self.assertEqual(replay_payload["identity_key"], first_payload["identity_key"])
+        self.assertEqual(store.export_write_count, before_export_writes + 1)
+        self.assertEqual(len(store.exports_by_id), 1)
+
+    def test_create_export_request_invalid_version_or_payload_returns_400_without_mutation(self) -> None:
+        app = create_app()
+        client = TestClient(app)
+        store = app.state.store
+        owner_headers = {"Authorization": "Bearer test:owner-e2:editor"}
+
+        project = client.post("/api/v1/projects", headers=owner_headers, json={"name": "Owned"}).json()
+        created_job = client.post(f"/api/v1/projects/{project['id']}/jobs", headers=owner_headers).json()
+        store.create_instruction_version(
+            owner_id="owner-e2",
+            instruction_id="inst-e2",
+            job_id=created_job["id"],
+            version=1,
+            markdown="# Intro {#intro}",
+        )
+        before_export_writes = store.export_write_count
+        before_export_count = len(store.exports_by_id)
+
+        invalid_version = client.post(
+            f"/api/v1/jobs/{created_job['id']}/exports",
+            headers=owner_headers,
+            json={"format": "PDF", "instruction_version_id": "99"},
+        )
+        self.assertEqual(invalid_version.status_code, 400)
+        self.assertEqual(invalid_version.json()["code"], "EXPORT_REQUEST_INVALID")
+
+        invalid_format = client.post(
+            f"/api/v1/jobs/{created_job['id']}/exports",
+            headers=owner_headers,
+            json={"format": "DOCX", "instruction_version_id": "1"},
+        )
+        self.assertEqual(invalid_format.status_code, 400)
+        self.assertEqual(invalid_format.json()["code"], "EXPORT_REQUEST_INVALID")
+
+        missing_field = client.post(
+            f"/api/v1/jobs/{created_job['id']}/exports",
+            headers=owner_headers,
+            json={"format": "PDF"},
+        )
+        self.assertEqual(missing_field.status_code, 400)
+        self.assertEqual(missing_field.json()["code"], "EXPORT_REQUEST_INVALID")
+
+        null_idempotency_key = client.post(
+            f"/api/v1/jobs/{created_job['id']}/exports",
+            headers=owner_headers,
+            json={"format": "PDF", "instruction_version_id": "1", "idempotency_key": None},
+        )
+        self.assertEqual(null_idempotency_key.status_code, 400)
+        self.assertEqual(null_idempotency_key.json()["code"], "EXPORT_REQUEST_INVALID")
+        self.assertEqual(store.export_write_count, before_export_writes)
+        self.assertEqual(len(store.exports_by_id), before_export_count)
+
+    def test_create_export_request_cross_owner_and_missing_job_are_no_leak_404(self) -> None:
+        app = create_app()
+        client = TestClient(app)
+        store = app.state.store
+        owner_headers = {"Authorization": "Bearer test:owner-e3:editor"}
+        other_headers = {"Authorization": "Bearer test:owner-e3-other:editor"}
+
+        project = client.post("/api/v1/projects", headers=owner_headers, json={"name": "Owned"}).json()
+        created_job = client.post(f"/api/v1/projects/{project['id']}/jobs", headers=owner_headers).json()
+        store.create_instruction_version(
+            owner_id="owner-e3",
+            instruction_id="inst-e3",
+            job_id=created_job["id"],
+            version=1,
+            markdown="# Intro {#intro}",
+        )
+        before_export_writes = store.export_write_count
+        before_export_count = len(store.exports_by_id)
+
+        cross_owner = client.post(
+            f"/api/v1/jobs/{created_job['id']}/exports",
+            headers=other_headers,
+            json={"format": "PDF", "instruction_version_id": "1"},
+        )
+        self.assertEqual(cross_owner.status_code, 404)
+        self.assertEqual(cross_owner.json(), {"code": "RESOURCE_NOT_FOUND", "message": "Resource not found"})
+
+        missing = client.post(
+            "/api/v1/jobs/job-missing/exports",
+            headers=owner_headers,
+            json={"format": "PDF", "instruction_version_id": "1"},
+        )
+        self.assertEqual(missing.status_code, 404)
+        self.assertEqual(missing.json(), {"code": "RESOURCE_NOT_FOUND", "message": "Resource not found"})
+        self.assertEqual(store.export_write_count, before_export_writes)
+        self.assertEqual(len(store.exports_by_id), before_export_count)
+
+    def test_create_export_request_ambiguous_job_version_returns_400_without_mutation(self) -> None:
+        app = create_app()
+        client = TestClient(app)
+        store = app.state.store
+        owner_headers = {"Authorization": "Bearer test:owner-e4:editor"}
+
+        project = client.post("/api/v1/projects", headers=owner_headers, json={"name": "Owned"}).json()
+        created_job = client.post(f"/api/v1/projects/{project['id']}/jobs", headers=owner_headers).json()
+        store.create_instruction_version(
+            owner_id="owner-e4",
+            instruction_id="inst-a",
+            job_id=created_job["id"],
+            version=1,
+            markdown="# A",
+        )
+        store.create_instruction_version(
+            owner_id="owner-e4",
+            instruction_id="inst-b",
+            job_id=created_job["id"],
+            version=1,
+            markdown="# B",
+        )
+
+        before_export_writes = store.export_write_count
+        before_export_count = len(store.exports_by_id)
+        ambiguous = client.post(
+            f"/api/v1/jobs/{created_job['id']}/exports",
+            headers=owner_headers,
+            json={"format": "PDF", "instruction_version_id": "1"},
+        )
+        self.assertEqual(ambiguous.status_code, 400)
+        self.assertEqual(ambiguous.json()["code"], "EXPORT_REQUEST_INVALID")
+        self.assertEqual(store.export_write_count, before_export_writes)
+        self.assertEqual(len(store.exports_by_id), before_export_count)
+
+    def test_create_export_request_persists_complete_provenance_for_mixed_active_asset_kinds(self) -> None:
+        app = create_app()
+        client = TestClient(app)
+        store = app.state.store
+        owner_headers = {"Authorization": "Bearer test:owner-e5:editor"}
+
+        project = client.post("/api/v1/projects", headers=owner_headers, json={"name": "Owned"}).json()
+        created_job = client.post(f"/api/v1/projects/{project['id']}/jobs", headers=owner_headers).json()
+        store.create_instruction_version(
+            owner_id="owner-e5",
+            instruction_id="inst-e5",
+            job_id=created_job["id"],
+            version=1,
+            markdown="# Intro {#intro}",
+            model_profile_id="cloud-default",
+            prompt_template_id="prompt-template-v1",
+            prompt_params_ref="prompt-params-v1",
+        )
+
+        extracted_for_extracted = client.post(
+            f"/api/v1/jobs/{created_job['id']}/screenshots/extract",
+            headers=owner_headers,
+            json={"instruction_id": "inst-e5", "instruction_version_id": "1", "timestamp_ms": 11000},
+        )
+        self.assertEqual(extracted_for_extracted.status_code, 202)
+        completed_extracted = store.complete_screenshot_task_success(
+            task_id=extracted_for_extracted.json()["task_id"],
+            image_uri="s3://bucket/screenshots/e5-extracted.png",
+            width=1200,
+            height=700,
+        )
+        anchor_extracted = completed_extracted.anchor_id
+        extracted_asset_id = completed_extracted.asset_id
+        assert anchor_extracted is not None
+        assert extracted_asset_id is not None
+
+        extracted_for_uploaded = client.post(
+            f"/api/v1/jobs/{created_job['id']}/screenshots/extract",
+            headers=owner_headers,
+            json={"instruction_id": "inst-e5", "instruction_version_id": "1", "timestamp_ms": 12000},
+        )
+        self.assertEqual(extracted_for_uploaded.status_code, 202)
+        completed_uploaded = store.complete_screenshot_task_success(
+            task_id=extracted_for_uploaded.json()["task_id"],
+            image_uri="s3://bucket/screenshots/e5-upload-base.png",
+            width=1000,
+            height=600,
+        )
+        anchor_uploaded = completed_uploaded.anchor_id
+        assert anchor_uploaded is not None
+
+        upload_ticket = client.post(
+            f"/api/v1/jobs/{created_job['id']}/screenshots/uploads",
+            headers=owner_headers,
+            json={
+                "filename": "e5-custom.png",
+                "mime_type": "image/png",
+                "size_bytes": 4096,
+                "checksum_sha256": _checksum("e5-upload"),
+            },
+        )
+        self.assertEqual(upload_ticket.status_code, 201)
+        upload_id = upload_ticket.json()["upload_id"]
+        confirmed_upload = client.post(
+            f"/api/v1/jobs/{created_job['id']}/screenshots/uploads/{upload_id}/confirm",
+            headers=owner_headers,
+            json={
+                "mime_type": "image/png",
+                "size_bytes": 4096,
+                "checksum_sha256": _checksum("e5-upload"),
+                "width": 640,
+                "height": 360,
+            },
+        )
+        self.assertEqual(confirmed_upload.status_code, 200)
+        attached_upload = client.post(
+            f"/api/v1/anchors/{anchor_uploaded}/attach-upload",
+            headers=owner_headers,
+            json={"upload_id": upload_id, "instruction_version_id": "1"},
+        )
+        self.assertEqual(attached_upload.status_code, 200)
+        uploaded_asset_id = attached_upload.json()["active_asset_id"]
+
+        extracted_for_annotated = client.post(
+            f"/api/v1/jobs/{created_job['id']}/screenshots/extract",
+            headers=owner_headers,
+            json={"instruction_id": "inst-e5", "instruction_version_id": "1", "timestamp_ms": 13000},
+        )
+        self.assertEqual(extracted_for_annotated.status_code, 202)
+        completed_annotated = store.complete_screenshot_task_success(
+            task_id=extracted_for_annotated.json()["task_id"],
+            image_uri="s3://bucket/screenshots/e5-annotate-base.png",
+            width=900,
+            height=500,
+        )
+        anchor_annotated = completed_annotated.anchor_id
+        annotated_base_asset_id = completed_annotated.asset_id
+        assert anchor_annotated is not None
+        assert annotated_base_asset_id is not None
+        annotated = client.post(
+            f"/api/v1/anchors/{anchor_annotated}/annotations",
+            headers=owner_headers,
+            json={
+                "base_asset_id": annotated_base_asset_id,
+                "operations": [
+                    {
+                        "op_type": "arrow",
+                        "geometry": {"x1": 10, "y1": 20, "x2": 150, "y2": 200},
+                        "style": {"color": "#ff0000", "width": 4},
+                    }
+                ],
+            },
+        )
+        self.assertEqual(annotated.status_code, 200)
+        annotated_asset_id = annotated.json()["rendered_asset_id"]
+
+        before_export_writes = store.export_write_count
+        exported = client.post(
+            f"/api/v1/jobs/{created_job['id']}/exports",
+            headers=owner_headers,
+            json={"format": "PDF", "instruction_version_id": "1"},
+        )
+        self.assertEqual(exported.status_code, 202)
+        self.assertEqual(store.export_write_count, before_export_writes + 1)
+
+        payload = exported.json()
+        provenance = payload["provenance"]
+        self.assertEqual(provenance["instruction_version_id"], "1")
+        self.assertEqual(provenance["screenshot_set_hash"], payload["screenshot_set_hash"])
+        self.assertEqual(provenance["instruction_snapshot_id"], "inst-e5:v1")
+        self.assertEqual(provenance["model_profile_id"], "cloud-default")
+        self.assertEqual(provenance["prompt_template_id"], "prompt-template-v1")
+        self.assertEqual(provenance["prompt_params_ref"], "prompt-params-v1")
+        self.assertNotIn("prompt_template", provenance)
+        self.assertNotIn("raw_prompt_text", provenance)
+        self.assertNotIn("raw_transcript", provenance)
+
+        anchors = provenance["anchors"]
+        self.assertEqual(len(anchors), 3)
+        self.assertEqual([anchor["anchor_id"] for anchor in anchors], sorted(anchor["anchor_id"] for anchor in anchors))
+        anchors_by_id = {anchor["anchor_id"]: anchor for anchor in anchors}
+        self.assertEqual(anchors_by_id[anchor_extracted]["active_asset_id"], extracted_asset_id)
+        self.assertIsNone(anchors_by_id[anchor_extracted].get("rendered_asset_id"))
+        self.assertEqual(anchors_by_id[anchor_uploaded]["active_asset_id"], uploaded_asset_id)
+        self.assertIsNone(anchors_by_id[anchor_uploaded].get("rendered_asset_id"))
+        self.assertEqual(anchors_by_id[anchor_annotated]["active_asset_id"], annotated_asset_id)
+        self.assertEqual(anchors_by_id[anchor_annotated]["rendered_asset_id"], annotated_asset_id)
+
+    def test_create_export_request_replay_preserves_provenance_without_drift(self) -> None:
+        app = create_app()
+        client = TestClient(app)
+        store = app.state.store
+        owner_headers = {"Authorization": "Bearer test:owner-e6:editor"}
+
+        project = client.post("/api/v1/projects", headers=owner_headers, json={"name": "Owned"}).json()
+        created_job = client.post(f"/api/v1/projects/{project['id']}/jobs", headers=owner_headers).json()
+        store.create_instruction_version(
+            owner_id="owner-e6",
+            instruction_id="inst-e6",
+            job_id=created_job["id"],
+            version=1,
+            markdown="# Intro {#intro}",
+            model_profile_id="cloud-default",
+            prompt_template_id="prompt-template-v1",
+        )
+        extracted = client.post(
+            f"/api/v1/jobs/{created_job['id']}/screenshots/extract",
+            headers=owner_headers,
+            json={"instruction_id": "inst-e6", "instruction_version_id": "1", "timestamp_ms": 12000},
+        )
+        self.assertEqual(extracted.status_code, 202)
+        store.complete_screenshot_task_success(
+            task_id=extracted.json()["task_id"],
+            image_uri="s3://bucket/screenshots/e6-base.png",
+            width=1000,
+            height=600,
+        )
+
+        before_export_writes = store.export_write_count
+        first = client.post(
+            f"/api/v1/jobs/{created_job['id']}/exports",
+            headers=owner_headers,
+            json={"format": "PDF", "instruction_version_id": "1"},
+        )
+        self.assertEqual(first.status_code, 202)
+        first_payload = first.json()
+
+        replay = client.post(
+            f"/api/v1/jobs/{created_job['id']}/exports",
+            headers=owner_headers,
+            json={"format": "PDF", "instruction_version_id": "1"},
+        )
+        self.assertEqual(replay.status_code, 200)
+        replay_payload = replay.json()
+        self.assertEqual(store.export_write_count, before_export_writes + 1)
+        self.assertEqual(replay_payload["id"], first_payload["id"])
+        self.assertEqual(replay_payload["identity_key"], first_payload["identity_key"])
+        self.assertEqual(replay_payload["provenance"], first_payload["provenance"])
+
+    def test_create_export_request_derives_snapshot_scoped_reference_ids_when_instruction_refs_missing(self) -> None:
+        app = create_app()
+        client = TestClient(app)
+        store = app.state.store
+        owner_headers = {"Authorization": "Bearer test:owner-e7:editor"}
+
+        project = client.post("/api/v1/projects", headers=owner_headers, json={"name": "Owned"}).json()
+        created_job = client.post(f"/api/v1/projects/{project['id']}/jobs", headers=owner_headers).json()
+        store.create_instruction_version(
+            owner_id="owner-e7",
+            instruction_id="inst-e7",
+            job_id=created_job["id"],
+            version=1,
+            markdown="# Intro {#intro}",
+        )
+
+        exported = client.post(
+            f"/api/v1/jobs/{created_job['id']}/exports",
+            headers=owner_headers,
+            json={"format": "PDF", "instruction_version_id": "1"},
+        )
+        self.assertEqual(exported.status_code, 202)
+        provenance = exported.json()["provenance"]
+        self.assertEqual(provenance["instruction_snapshot_id"], "inst-e7:v1")
+        self.assertEqual(provenance["model_profile_id"], "inst-e7:v1:model-profile")
+        self.assertEqual(provenance["prompt_template_id"], "inst-e7:v1:prompt-template")
+
+    def test_get_export_status_owner_retrieval_is_read_only_and_download_url_is_state_gated(self) -> None:
+        app = create_app()
+        client = TestClient(app)
+        store = app.state.store
+        owner_headers = {"Authorization": "Bearer test:owner-e8:editor"}
+
+        project = client.post("/api/v1/projects", headers=owner_headers, json={"name": "Owned"}).json()
+        created_job = client.post(f"/api/v1/projects/{project['id']}/jobs", headers=owner_headers).json()
+        store.create_instruction_version(
+            owner_id="owner-e8",
+            instruction_id="inst-e8",
+            job_id=created_job["id"],
+            version=1,
+            markdown="# Intro {#intro}",
+        )
+
+        created_export = client.post(
+            f"/api/v1/jobs/{created_job['id']}/exports",
+            headers=owner_headers,
+            json={"format": "PDF", "instruction_version_id": "1"},
+        )
+        self.assertEqual(created_export.status_code, 202)
+        created_payload = created_export.json()
+        export_id = created_payload["id"]
+        export_record = store.exports_by_id[export_id]
+
+        status_to_event = {
+            ExportStatus.REQUESTED: ExportAuditEventType.EXPORT_REQUESTED,
+            ExportStatus.RUNNING: ExportAuditEventType.EXPORT_STARTED,
+            ExportStatus.SUCCEEDED: ExportAuditEventType.EXPORT_SUCCEEDED,
+            ExportStatus.FAILED: ExportAuditEventType.EXPORT_FAILED,
+        }
+        for export_status, audit_event in status_to_event.items():
+            with self.subTest(export_status=export_status.value):
+                export_record.status = export_status
+                export_record.last_audit_event = audit_event
+                if export_status is ExportStatus.SUCCEEDED:
+                    export_record.provenance_frozen_at = datetime.now(UTC)
+                else:
+                    export_record.provenance_frozen_at = None
+
+                before_export_writes = store.export_write_count
+                before_job_writes = store.job_write_count
+                response = client.get(f"/api/v1/exports/{export_id}", headers=owner_headers)
+
+                self.assertEqual(response.status_code, 200)
+                payload = response.json()
+                self.assertEqual(payload["id"], export_id)
+                self.assertEqual(payload["job_id"], created_job["id"])
+                self.assertEqual(payload["status"], export_status.value)
+                self.assertEqual(payload["identity_key"], created_payload["identity_key"])
+                self.assertEqual(payload["screenshot_set_hash"], created_payload["screenshot_set_hash"])
+                self.assertEqual(payload["last_audit_event"], audit_event.value)
+                self.assertEqual(payload["provenance"]["instruction_version_id"], "1")
+                self.assertEqual(payload["provenance"]["screenshot_set_hash"], created_payload["screenshot_set_hash"])
+                self.assertIn("instruction_snapshot_id", payload["provenance"])
+
+                if export_status is ExportStatus.SUCCEEDED:
+                    self.assertIn("download_url", payload)
+                    self.assertIn("download_url_expires_at", payload)
+                    download_url = payload["download_url"]
+                    parsed = urlparse(download_url)
+                    self.assertEqual(parsed.scheme, "https")
+                    self.assertEqual(parsed.netloc, "downloads.howera.local")
+                    self.assertEqual(parsed.path, f"/exports/{export_id}/{export_id}.pdf")
+                    query = parse_qs(parsed.query, keep_blank_values=False)
+                    self.assertIn("expires", query)
+                    self.assertIn("sig", query)
+                    self.assertEqual(len(query["expires"]), 1)
+                    self.assertEqual(len(query["sig"]), 1)
+
+                    expires_epoch = int(query["expires"][0])
+                    expected_signature = store._build_export_download_signature(
+                        owner_id="owner-e8",
+                        export_id=export_id,
+                        filename=f"{export_id}.pdf",
+                        expires_epoch=expires_epoch,
+                    )
+                    self.assertEqual(query["sig"][0], expected_signature)
+
+                    download_url_expires_at = datetime.fromisoformat(payload["download_url_expires_at"].replace("Z", "+00:00"))
+                    self.assertEqual(
+                        int(download_url_expires_at.timestamp()),
+                        expires_epoch,
+                    )
+                    ttl_seconds = (download_url_expires_at - datetime.now(UTC)).total_seconds()
+                    self.assertGreater(ttl_seconds, 0)
+                    self.assertLessEqual(ttl_seconds, 15 * 60)
+                    self.assertIn("provenance_frozen_at", payload)
+                else:
+                    self.assertNotIn("download_url", payload)
+                    self.assertNotIn("download_url_expires_at", payload)
+
+                self.assertEqual(store.export_write_count, before_export_writes)
+                self.assertEqual(store.job_write_count, before_job_writes)
+
+    def test_get_export_status_signed_url_is_scoped_per_export_artifact(self) -> None:
+        app = create_app()
+        client = TestClient(app)
+        store = app.state.store
+        owner_headers = {"Authorization": "Bearer test:owner-e8b:editor"}
+
+        project = client.post("/api/v1/projects", headers=owner_headers, json={"name": "Owned"}).json()
+        created_job = client.post(f"/api/v1/projects/{project['id']}/jobs", headers=owner_headers).json()
+        store.create_instruction_version(
+            owner_id="owner-e8b",
+            instruction_id="inst-e8b",
+            job_id=created_job["id"],
+            version=1,
+            markdown="# Intro {#intro}",
+        )
+
+        pdf_export = client.post(
+            f"/api/v1/jobs/{created_job['id']}/exports",
+            headers=owner_headers,
+            json={"format": "PDF", "instruction_version_id": "1"},
+        )
+        self.assertEqual(pdf_export.status_code, 202)
+        zip_export = client.post(
+            f"/api/v1/jobs/{created_job['id']}/exports",
+            headers=owner_headers,
+            json={"format": "MD_ZIP", "instruction_version_id": "1"},
+        )
+        self.assertEqual(zip_export.status_code, 202)
+
+        pdf_export_id = pdf_export.json()["id"]
+        zip_export_id = zip_export.json()["id"]
+        store.exports_by_id[pdf_export_id].status = ExportStatus.SUCCEEDED
+        store.exports_by_id[pdf_export_id].last_audit_event = ExportAuditEventType.EXPORT_SUCCEEDED
+        store.exports_by_id[pdf_export_id].provenance_frozen_at = datetime.now(UTC)
+        store.exports_by_id[zip_export_id].status = ExportStatus.SUCCEEDED
+        store.exports_by_id[zip_export_id].last_audit_event = ExportAuditEventType.EXPORT_SUCCEEDED
+        store.exports_by_id[zip_export_id].provenance_frozen_at = datetime.now(UTC)
+
+        pdf_response = client.get(f"/api/v1/exports/{pdf_export_id}", headers=owner_headers)
+        zip_response = client.get(f"/api/v1/exports/{zip_export_id}", headers=owner_headers)
+        self.assertEqual(pdf_response.status_code, 200)
+        self.assertEqual(zip_response.status_code, 200)
+
+        pdf_url = pdf_response.json()["download_url"]
+        zip_url = zip_response.json()["download_url"]
+        pdf_parsed = urlparse(pdf_url)
+        zip_parsed = urlparse(zip_url)
+        self.assertEqual(pdf_parsed.path, f"/exports/{pdf_export_id}/{pdf_export_id}.pdf")
+        self.assertEqual(zip_parsed.path, f"/exports/{zip_export_id}/{zip_export_id}.zip")
+        self.assertNotEqual(pdf_url, zip_url)
+        self.assertNotIn(zip_export_id, pdf_url)
+        self.assertNotIn(pdf_export_id, zip_url)
+
+    def test_get_export_status_cross_owner_and_missing_are_no_leak_404(self) -> None:
+        app = create_app()
+        client = TestClient(app)
+        store = app.state.store
+        owner_headers = {"Authorization": "Bearer test:owner-e9:editor"}
+        other_headers = {"Authorization": "Bearer test:owner-e9-other:editor"}
+
+        project = client.post("/api/v1/projects", headers=owner_headers, json={"name": "Owned"}).json()
+        created_job = client.post(f"/api/v1/projects/{project['id']}/jobs", headers=owner_headers).json()
+        store.create_instruction_version(
+            owner_id="owner-e9",
+            instruction_id="inst-e9",
+            job_id=created_job["id"],
+            version=1,
+            markdown="# Intro {#intro}",
+        )
+        created_export = client.post(
+            f"/api/v1/jobs/{created_job['id']}/exports",
+            headers=owner_headers,
+            json={"format": "PDF", "instruction_version_id": "1"},
+        )
+        self.assertEqual(created_export.status_code, 202)
+        export_id = created_export.json()["id"]
+
+        before_export_writes = store.export_write_count
+        before_job_writes = store.job_write_count
+        cross_owner = client.get(f"/api/v1/exports/{export_id}", headers=other_headers)
+        missing = client.get("/api/v1/exports/export-missing", headers=owner_headers)
+
+        self.assertEqual(cross_owner.status_code, 404)
+        self.assertEqual(cross_owner.json(), {"code": "RESOURCE_NOT_FOUND", "message": "Resource not found"})
+        self.assertEqual(missing.status_code, 404)
+        self.assertEqual(missing.json(), {"code": "RESOURCE_NOT_FOUND", "message": "Resource not found"})
+        self.assertEqual(store.export_write_count, before_export_writes)
+        self.assertEqual(store.job_write_count, before_job_writes)
+
 
 class JobOwnershipUnitTests(unittest.TestCase):
     def test_service_and_repository_scope_job_to_owner(self) -> None:
@@ -3126,6 +3730,384 @@ class JobOwnershipUnitTests(unittest.TestCase):
             canonical_key,
             "job-1|1|12000|250|nearest_keyframe|jpg",
         )
+
+    def test_build_export_identity_key_is_deterministic_across_anchor_ordering(self) -> None:
+        store = InMemoryStore()
+        bindings_a = [
+            ExportAnchorBindingRecord(
+                anchor_id="anchor-b",
+                active_asset_id="asset-b",
+                rendered_asset_id=None,
+            ),
+            ExportAnchorBindingRecord(
+                anchor_id="anchor-a",
+                active_asset_id="asset-a",
+                rendered_asset_id="asset-a",
+            ),
+        ]
+        bindings_b = [
+            ExportAnchorBindingRecord(
+                anchor_id="anchor-a",
+                active_asset_id="asset-a",
+                rendered_asset_id="asset-a",
+            ),
+            ExportAnchorBindingRecord(
+                anchor_id="anchor-b",
+                active_asset_id="asset-b",
+                rendered_asset_id=None,
+            ),
+        ]
+
+        hash_a = store.build_export_screenshot_set_hash(bindings=bindings_a)
+        hash_b = store.build_export_screenshot_set_hash(bindings=bindings_b)
+        self.assertEqual(hash_a, hash_b)
+
+        identity_a = store.build_export_identity_key(
+            instruction_version_id="1",
+            export_format=ExportFormat.PDF,
+            screenshot_set_hash=hash_a,
+        )
+        identity_b = store.build_export_identity_key(
+            instruction_version_id="1",
+            export_format=ExportFormat.PDF,
+            screenshot_set_hash=hash_b,
+        )
+        self.assertEqual(identity_a, identity_b)
+
+    def test_export_audit_events_emit_canonical_lifecycle_types_with_required_metadata(self) -> None:
+        store = InMemoryStore()
+        project = store.create_project(owner_id="user-export-audit", name="Project Audit")
+        service = JobService(store)
+        job = service.create_job(owner_id="user-export-audit", project_id=project.id)
+        store.jobs[job.id].status = JobStatus.EDITING
+        store.create_instruction_version(
+            owner_id="user-export-audit",
+            instruction_id="inst-export-audit",
+            job_id=job.id,
+            version=1,
+            markdown="# Export",
+            model_profile_id="cloud-default",
+            prompt_template_id="prompt-template-v1",
+        )
+
+        created_pdf = service.create_export_request(
+            owner_id="user-export-audit",
+            job_id=job.id,
+            payload=CreateExportRequest(format=ExportFormat.PDF, instruction_version_id="1"),
+        )
+        pdf_export_id = created_pdf.export.id
+        service.start_export_execution(owner_id="user-export-audit", export_id=pdf_export_id)
+        service.complete_export_success(owner_id="user-export-audit", export_id=pdf_export_id)
+
+        failure_job = service.create_job(owner_id="user-export-audit", project_id=project.id)
+        store.jobs[failure_job.id].status = JobStatus.EDITING
+        store.create_instruction_version(
+            owner_id="user-export-audit",
+            instruction_id="inst-export-audit-failure",
+            job_id=failure_job.id,
+            version=1,
+            markdown="# Export Failure",
+            model_profile_id="cloud-default",
+            prompt_template_id="prompt-template-v1",
+        )
+        created_zip = service.create_export_request(
+            owner_id="user-export-audit",
+            job_id=failure_job.id,
+            payload=CreateExportRequest(format=ExportFormat.MD_ZIP, instruction_version_id="1"),
+        )
+        zip_export_id = created_zip.export.id
+        service.start_export_execution(owner_id="user-export-audit", export_id=zip_export_id)
+        service.complete_export_failure(owner_id="user-export-audit", export_id=zip_export_id)
+
+        self.assertEqual(store.export_audit_write_count, len(store.export_audit_events))
+
+        pdf_events = [event for event in store.export_audit_events if event.export_id == pdf_export_id]
+        self.assertEqual(
+            [event.event_type for event in pdf_events],
+            [
+                ExportAuditEventType.EXPORT_REQUESTED,
+                ExportAuditEventType.EXPORT_STARTED,
+                ExportAuditEventType.EXPORT_SUCCEEDED,
+            ],
+        )
+        self.assertTrue(all(event.identity_key == created_pdf.export.identity_key for event in pdf_events))
+
+        zip_events = [event for event in store.export_audit_events if event.export_id == zip_export_id]
+        self.assertEqual(
+            [event.event_type for event in zip_events],
+            [
+                ExportAuditEventType.EXPORT_REQUESTED,
+                ExportAuditEventType.EXPORT_STARTED,
+                ExportAuditEventType.EXPORT_FAILED,
+            ],
+        )
+        self.assertTrue(all(event.identity_key == created_zip.export.identity_key for event in zip_events))
+
+        for event in store.export_audit_events:
+            self.assertTrue(event.correlation_id)
+            self.assertEqual(event.occurred_at.utcoffset(), timedelta(0))
+            self.assertEqual(event.recorded_at.utcoffset(), timedelta(0))
+
+    def test_export_audit_events_suppress_duplicates_for_idempotent_replays(self) -> None:
+        store = InMemoryStore()
+        project = store.create_project(owner_id="user-export-idem", name="Project Idempotent")
+        service = JobService(store)
+        job = service.create_job(owner_id="user-export-idem", project_id=project.id)
+        store.jobs[job.id].status = JobStatus.EDITING
+        store.create_instruction_version(
+            owner_id="user-export-idem",
+            instruction_id="inst-export-idem",
+            job_id=job.id,
+            version=1,
+            markdown="# Export",
+        )
+
+        created = service.create_export_request(
+            owner_id="user-export-idem",
+            job_id=job.id,
+            payload=CreateExportRequest(format=ExportFormat.PDF, instruction_version_id="1"),
+        )
+        export_id = created.export.id
+        self.assertEqual(len(store.export_audit_events), 1)
+
+        replay = service.create_export_request(
+            owner_id="user-export-idem",
+            job_id=job.id,
+            payload=CreateExportRequest(format=ExportFormat.PDF, instruction_version_id="1"),
+        )
+        self.assertTrue(replay.replayed)
+        self.assertEqual(len(store.export_audit_events), 1)
+
+        service.start_export_execution(owner_id="user-export-idem", export_id=export_id)
+        self.assertEqual(len(store.export_audit_events), 2)
+
+        start_replay = service.start_export_execution(owner_id="user-export-idem", export_id=export_id)
+        self.assertTrue(start_replay.replayed)
+        self.assertEqual(len(store.export_audit_events), 2)
+
+        service.complete_export_success(owner_id="user-export-idem", export_id=export_id)
+        self.assertEqual(len(store.export_audit_events), 3)
+
+        success_replay = service.complete_export_success(owner_id="user-export-idem", export_id=export_id)
+        self.assertTrue(success_replay.replayed)
+        self.assertEqual(len(store.export_audit_events), 3)
+
+        late_start_replay = service.start_export_execution(owner_id="user-export-idem", export_id=export_id)
+        self.assertTrue(late_start_replay.replayed)
+        self.assertEqual(len(store.export_audit_events), 3)
+
+        canonical_events = [event.event_type for event in store.export_audit_events if event.export_id == export_id]
+        self.assertEqual(
+            canonical_events,
+            [
+                ExportAuditEventType.EXPORT_REQUESTED,
+                ExportAuditEventType.EXPORT_STARTED,
+                ExportAuditEventType.EXPORT_SUCCEEDED,
+            ],
+        )
+
+    def test_issue_export_download_url_requires_succeeded_state(self) -> None:
+        store = InMemoryStore()
+        project = store.create_project(owner_id="user-export-url-guard", name="Project URL Guard")
+        service = JobService(store)
+        job = service.create_job(owner_id="user-export-url-guard", project_id=project.id)
+        store.jobs[job.id].status = JobStatus.EDITING
+        store.create_instruction_version(
+            owner_id="user-export-url-guard",
+            instruction_id="inst-export-url-guard",
+            job_id=job.id,
+            version=1,
+            markdown="# Export",
+        )
+        created = service.create_export_request(
+            owner_id="user-export-url-guard",
+            job_id=job.id,
+            payload=CreateExportRequest(format=ExportFormat.PDF, instruction_version_id="1"),
+        )
+        export_id = created.export.id
+
+        with self.assertRaises(ApiError) as not_ready:
+            store.issue_export_download_url(owner_id="user-export-url-guard", export_id=export_id)
+
+        self.assertEqual(not_ready.exception.status_code, 409)
+        self.assertEqual(not_ready.exception.payload.code, "EXPORT_NOT_READY")
+        self.assertEqual(not_ready.exception.payload.details["current_status"], ExportStatus.REQUESTED)
+
+        store.exports_by_id[export_id].status = ExportStatus.SUCCEEDED
+        download_url, expires_at = store.issue_export_download_url(
+            owner_id="user-export-url-guard",
+            export_id=export_id,
+        )
+        parsed = urlparse(download_url)
+        self.assertEqual(parsed.netloc, "downloads.howera.local")
+        self.assertEqual(parsed.path, f"/exports/{export_id}/{export_id}.pdf")
+        self.assertEqual(expires_at.microsecond, 0)
+
+    def test_export_execution_success_freezes_provenance_links_manifest_and_replays_idempotently(self) -> None:
+        store = InMemoryStore()
+        project = store.create_project(owner_id="user-export-a", name="Project A")
+        service = JobService(store)
+        job = service.create_job(owner_id="user-export-a", project_id=project.id)
+        store.jobs[job.id].status = JobStatus.EDITING
+        store.create_instruction_version(
+            owner_id="user-export-a",
+            instruction_id="inst-export-a",
+            job_id=job.id,
+            version=1,
+            markdown="# Export",
+            model_profile_id="cloud-default",
+            prompt_template_id="prompt-template-v1",
+        )
+        created = service.create_export_request(
+            owner_id="user-export-a",
+            job_id=job.id,
+            payload=CreateExportRequest(format=ExportFormat.PDF, instruction_version_id="1"),
+        )
+        self.assertFalse(created.replayed)
+        export_id = created.export.id
+
+        before_export_writes = store.export_write_count
+        before_job_writes = store.job_write_count
+        started = service.start_export_execution(owner_id="user-export-a", export_id=export_id)
+        self.assertFalse(started.replayed)
+        self.assertEqual(started.export.status, ExportStatus.RUNNING)
+        self.assertEqual(store.export_write_count, before_export_writes + 1)
+        self.assertEqual(store.jobs[job.id].status, JobStatus.EXPORTING)
+        self.assertGreater(store.job_write_count, before_job_writes)
+
+        start_replay = service.start_export_execution(owner_id="user-export-a", export_id=export_id)
+        self.assertTrue(start_replay.replayed)
+        self.assertEqual(start_replay.export.status, ExportStatus.RUNNING)
+        self.assertEqual(store.export_write_count, before_export_writes + 1)
+
+        succeeded = service.complete_export_success(owner_id="user-export-a", export_id=export_id)
+        self.assertFalse(succeeded.replayed)
+        self.assertEqual(succeeded.export.status, ExportStatus.SUCCEEDED)
+        self.assertIsNotNone(succeeded.export.provenance_frozen_at)
+        self.assertEqual(succeeded.export.last_audit_event, ExportAuditEventType.EXPORT_SUCCEEDED)
+        self.assertEqual(store.jobs[job.id].status, JobStatus.DONE)
+        self.assertEqual(store.jobs[job.id].manifest.exports, [export_id])
+        self.assertIn(job.id, store.export_linkages_by_job)
+        self.assertEqual(len(store.export_linkages_by_job[job.id]), 1)
+        self.assertEqual(store.export_linkages_by_job[job.id][0].export_id, export_id)
+        self.assertEqual(store.export_linkages_by_job[job.id][0].identity_key, succeeded.export.identity_key)
+        frozen_at = succeeded.export.provenance_frozen_at
+        frozen_provenance = succeeded.export.provenance.model_dump(mode="json")
+        writes_after_success = store.export_write_count
+        job_writes_after_success = store.job_write_count
+
+        late_start_replay = service.start_export_execution(owner_id="user-export-a", export_id=export_id)
+        self.assertTrue(late_start_replay.replayed)
+        self.assertEqual(late_start_replay.export.status, ExportStatus.SUCCEEDED)
+        self.assertEqual(store.export_write_count, writes_after_success)
+
+        success_replay = service.complete_export_success(owner_id="user-export-a", export_id=export_id)
+        self.assertTrue(success_replay.replayed)
+        self.assertEqual(success_replay.export.status, ExportStatus.SUCCEEDED)
+        self.assertEqual(success_replay.export.provenance_frozen_at, frozen_at)
+        self.assertEqual(success_replay.export.provenance.model_dump(mode="json"), frozen_provenance)
+        self.assertEqual(store.export_write_count, writes_after_success)
+        self.assertEqual(store.job_write_count, job_writes_after_success)
+        self.assertEqual(store.jobs[job.id].manifest.exports, [export_id])
+        self.assertEqual(len(store.export_linkages_by_job[job.id]), 1)
+
+    def test_export_execution_failure_is_replay_safe(self) -> None:
+        store = InMemoryStore()
+        project = store.create_project(owner_id="user-export-b", name="Project B")
+        service = JobService(store)
+        job = service.create_job(owner_id="user-export-b", project_id=project.id)
+        store.jobs[job.id].status = JobStatus.EDITING
+        store.create_instruction_version(
+            owner_id="user-export-b",
+            instruction_id="inst-export-b",
+            job_id=job.id,
+            version=1,
+            markdown="# Export",
+        )
+        created = service.create_export_request(
+            owner_id="user-export-b",
+            job_id=job.id,
+            payload=CreateExportRequest(format=ExportFormat.PDF, instruction_version_id="1"),
+        )
+        export_id = created.export.id
+        service.start_export_execution(owner_id="user-export-b", export_id=export_id)
+
+        before_export_writes = store.export_write_count
+        failed = service.complete_export_failure(owner_id="user-export-b", export_id=export_id)
+        self.assertFalse(failed.replayed)
+        self.assertEqual(failed.export.status, ExportStatus.FAILED)
+        self.assertEqual(failed.export.last_audit_event, ExportAuditEventType.EXPORT_FAILED)
+        self.assertEqual(store.export_write_count, before_export_writes + 1)
+        self.assertEqual(store.jobs[job.id].status, JobStatus.EDITING)
+
+        failure_replay = service.complete_export_failure(owner_id="user-export-b", export_id=export_id)
+        self.assertTrue(failure_replay.replayed)
+        self.assertEqual(failure_replay.export.status, ExportStatus.FAILED)
+        self.assertEqual(store.export_write_count, before_export_writes + 1)
+
+        late_start_replay = service.start_export_execution(owner_id="user-export-b", export_id=export_id)
+        self.assertTrue(late_start_replay.replayed)
+        self.assertEqual(late_start_replay.export.status, ExportStatus.FAILED)
+        self.assertEqual(store.export_write_count, before_export_writes + 1)
+
+    def test_export_execution_rejects_illegal_transition_without_mutation(self) -> None:
+        store = InMemoryStore()
+        project = store.create_project(owner_id="user-export-c", name="Project C")
+        service = JobService(store)
+        job = service.create_job(owner_id="user-export-c", project_id=project.id)
+        store.jobs[job.id].status = JobStatus.EDITING
+        store.create_instruction_version(
+            owner_id="user-export-c",
+            instruction_id="inst-export-c",
+            job_id=job.id,
+            version=1,
+            markdown="# Export",
+        )
+        created = service.create_export_request(
+            owner_id="user-export-c",
+            job_id=job.id,
+            payload=CreateExportRequest(format=ExportFormat.PDF, instruction_version_id="1"),
+        )
+        export_id = created.export.id
+
+        before_export_writes = store.export_write_count
+        before_status = store.exports_by_id[export_id].status
+        with self.assertRaises(ApiError) as illegal_transition:
+            service.complete_export_success(owner_id="user-export-c", export_id=export_id)
+        self.assertEqual(illegal_transition.exception.status_code, 409)
+        self.assertEqual(illegal_transition.exception.payload.code, "EXPORT_TRANSITION_INVALID")
+        self.assertEqual(store.exports_by_id[export_id].status, before_status)
+        self.assertEqual(store.export_write_count, before_export_writes)
+
+    def test_export_execution_is_owner_scoped_with_no_leak_404(self) -> None:
+        store = InMemoryStore()
+        project = store.create_project(owner_id="user-export-d", name="Project D")
+        service = JobService(store)
+        job = service.create_job(owner_id="user-export-d", project_id=project.id)
+        store.jobs[job.id].status = JobStatus.EDITING
+        store.create_instruction_version(
+            owner_id="user-export-d",
+            instruction_id="inst-export-d",
+            job_id=job.id,
+            version=1,
+            markdown="# Export",
+        )
+        created = service.create_export_request(
+            owner_id="user-export-d",
+            job_id=job.id,
+            payload=CreateExportRequest(format=ExportFormat.PDF, instruction_version_id="1"),
+        )
+        export_id = created.export.id
+
+        with self.assertRaises(ApiError) as cross_owner:
+            service.start_export_execution(owner_id="user-export-d-other", export_id=export_id)
+        self.assertEqual(cross_owner.exception.status_code, 404)
+        self.assertEqual(cross_owner.exception.payload.code, "RESOURCE_NOT_FOUND")
+
+        with self.assertRaises(ApiError) as missing:
+            service.start_export_execution(owner_id="user-export-d", export_id="export-missing")
+        self.assertEqual(missing.exception.status_code, 404)
+        self.assertEqual(missing.exception.payload.code, "RESOURCE_NOT_FOUND")
 
     def test_build_annotation_ops_hash_is_deterministic_across_semantic_payload_orderings(self) -> None:
         store = InMemoryStore()

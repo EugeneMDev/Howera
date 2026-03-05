@@ -11,6 +11,7 @@ from app.domain.job_fsm import allowed_next_statuses, ensure_transition
 from app.errors import ApiError
 from app.repositories.memory import (
     CustomUploadRecord,
+    ExportRecord,
     InMemoryStore,
     JobRecord,
     ScreenshotAnnotationResultRecord,
@@ -31,8 +32,13 @@ from app.schemas.job import (
     ConfirmCustomUploadRequest,
     ConfirmCustomUploadResponse,
     CreateCustomUploadRequest,
+    CreateExportRequest,
     ConfirmUploadResponse,
     CustomUploadTicket,
+    Export,
+    ExportAnchorBinding,
+    ExportStatus,
+    ExportProvenance,
     Job,
     JobStatus,
     RetryJobResponse,
@@ -78,6 +84,18 @@ _BLOCK_ID_PATTERN = re.compile(r"\{#([A-Za-z0-9._:-]+)\}")
 @dataclass(slots=True)
 class ScreenshotExtractionResult:
     task: ScreenshotTask
+    replayed: bool
+
+
+@dataclass(slots=True)
+class ExportRequestResult:
+    export: Export
+    replayed: bool
+
+
+@dataclass(slots=True)
+class ExportExecutionResult:
+    export: Export
     replayed: bool
 
 
@@ -344,6 +362,130 @@ class JobService:
             dispatch_id=dispatch.dispatch_id,
             replayed=False,
         )
+
+    def create_export_request(
+        self,
+        *,
+        owner_id: str,
+        job_id: str,
+        payload: CreateExportRequest,
+    ) -> ExportRequestResult:
+        job_record = self._store.get_job_for_owner(owner_id=owner_id, job_id=job_id)
+        if job_record is None:
+            raise ApiError(status_code=404, code="RESOURCE_NOT_FOUND", message="Resource not found")
+
+        instruction_version = self._resolve_instruction_version_id(payload.instruction_version_id)
+        if instruction_version is None:
+            self._raise_invalid_export_request()
+
+        instruction_record = self._store.get_instruction_for_owner_job_version(
+            owner_id=owner_id,
+            job_id=job_record.id,
+            version=instruction_version,
+        )
+        if instruction_record is None:
+            self._raise_invalid_export_request()
+
+        normalized_instruction_version_id = str(instruction_record.version)
+        anchor_bindings = self._store.list_export_anchor_bindings(
+            owner_id=owner_id,
+            job_id=job_record.id,
+            instruction_id=instruction_record.instruction_id,
+            instruction_version_id=normalized_instruction_version_id,
+        )
+        screenshot_set_hash = self._store.build_export_screenshot_set_hash(bindings=anchor_bindings)
+        identity_key = self._store.build_export_identity_key(
+            instruction_version_id=normalized_instruction_version_id,
+            export_format=payload.format,
+            screenshot_set_hash=screenshot_set_hash,
+        )
+        instruction_snapshot_id = f"{instruction_record.instruction_id}:v{normalized_instruction_version_id}"
+        model_profile_id = instruction_record.model_profile_id or f"{instruction_snapshot_id}:model-profile"
+        prompt_template_id = instruction_record.prompt_template_id or f"{instruction_snapshot_id}:prompt-template"
+
+        provenance = ExportProvenance(
+            instruction_version_id=normalized_instruction_version_id,
+            screenshot_set_hash=screenshot_set_hash,
+            anchors=[
+                ExportAnchorBinding(
+                    anchor_id=binding.anchor_id,
+                    active_asset_id=binding.active_asset_id,
+                    rendered_asset_id=binding.rendered_asset_id,
+                )
+                for binding in anchor_bindings
+            ],
+            instruction_snapshot_id=instruction_snapshot_id,
+            model_profile_id=model_profile_id,
+            prompt_template_id=prompt_template_id,
+            prompt_params_ref=instruction_record.prompt_params_ref,
+            generated_at=datetime.now(UTC),
+        )
+        export_record, replayed = self._store.create_export_request(
+            owner_id=owner_id,
+            job_id=job_record.id,
+            export_format=payload.format,
+            instruction_version_id=normalized_instruction_version_id,
+            identity_key=identity_key,
+            screenshot_set_hash=screenshot_set_hash,
+            provenance=provenance,
+        )
+        return ExportRequestResult(export=self._to_export(export_record), replayed=replayed)
+
+    def get_export(
+        self,
+        *,
+        owner_id: str,
+        export_id: str,
+    ) -> Export:
+        export_record = self._store.get_export_for_owner(owner_id=owner_id, export_id=export_id)
+        if export_record is None:
+            raise ApiError(status_code=404, code="RESOURCE_NOT_FOUND", message="Resource not found")
+
+        export = self._to_export(export_record)
+        if export.status is not ExportStatus.SUCCEEDED:
+            return export.model_copy(
+                update={
+                    "download_url": None,
+                    "download_url_expires_at": None,
+                }
+            )
+        download_url, download_url_expires_at = self._store.issue_export_download_url(
+            owner_id=owner_id,
+            export_id=export_record.export_id,
+        )
+        return export.model_copy(
+            update={
+                "download_url": download_url,
+                "download_url_expires_at": download_url_expires_at,
+            }
+        )
+
+    def start_export_execution(
+        self,
+        *,
+        owner_id: str,
+        export_id: str,
+    ) -> ExportExecutionResult:
+        export_record, replayed = self._store.start_export_execution(owner_id=owner_id, export_id=export_id)
+        return ExportExecutionResult(export=self._to_export(export_record), replayed=replayed)
+
+    def complete_export_success(
+        self,
+        *,
+        owner_id: str,
+        export_id: str,
+    ) -> ExportExecutionResult:
+        export_record, replayed = self._store.complete_export_success(owner_id=owner_id, export_id=export_id)
+        return ExportExecutionResult(export=self._to_export(export_record), replayed=replayed)
+
+    def complete_export_failure(
+        self,
+        *,
+        owner_id: str,
+        export_id: str,
+    ) -> ExportExecutionResult:
+        export_record, replayed = self._store.complete_export_failure(owner_id=owner_id, export_id=export_id)
+        return ExportExecutionResult(export=self._to_export(export_record), replayed=replayed)
 
     def cancel_job(self, *, owner_id: str, job_id: str, correlation_id: str) -> Job:
         record = self._store.get_job_for_owner(owner_id=owner_id, job_id=job_id)
@@ -1168,6 +1310,14 @@ class JobService:
         return None
 
     @staticmethod
+    def _raise_invalid_export_request() -> None:
+        raise ApiError(
+            status_code=400,
+            code="EXPORT_REQUEST_INVALID",
+            message="Unsupported format or invalid instruction version.",
+        )
+
+    @staticmethod
     def _to_job(record: JobRecord) -> Job:
         return Job(
             id=record.id,
@@ -1208,6 +1358,25 @@ class JobService:
             expires_at=record.expires_at,
             max_size_bytes=record.max_size_bytes,
             allowed_mime_types=[ScreenshotMimeType(item) for item in record.allowed_mime_types],
+        )
+
+    @staticmethod
+    def _to_export(record: ExportRecord) -> Export:
+        return Export(
+            id=record.export_id,
+            job_id=record.job_id,
+            format=record.format,
+            status=record.status,
+            instruction_version_id=record.instruction_version_id,
+            identity_key=record.identity_key,
+            screenshot_set_hash=record.screenshot_set_hash,
+            provenance=record.provenance.model_copy(deep=True),
+            provenance_frozen_at=record.provenance_frozen_at,
+            last_audit_event=record.last_audit_event,
+            download_url=record.download_url,
+            download_url_expires_at=record.download_url_expires_at,
+            created_at=record.created_at,
+            updated_at=record.updated_at,
         )
 
     @staticmethod

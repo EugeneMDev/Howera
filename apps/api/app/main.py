@@ -8,6 +8,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.openapi.utils import get_openapi
 from fastapi.responses import JSONResponse
 
+from app.core.config import get_settings
 from app.errors import ApiError
 from app.repositories.memory import InMemoryStore
 from app.routes import instructions_router, internal_router, jobs_router, projects_router
@@ -27,6 +28,8 @@ _OPENAPI_RESPONSE_CODES: dict[str, dict[str, set[str]]] = {
     "/api/v1/jobs/{jobId}/transcript": {"get": {"200", "404", "409"}},
     "/api/v1/jobs/{jobId}/confirm-upload": {"post": {"200", "404", "409"}},
     "/api/v1/jobs/{jobId}/run": {"post": {"200", "202", "404", "409", "502"}},
+    "/api/v1/jobs/{jobId}/exports": {"post": {"200", "202", "400", "404"}},
+    "/api/v1/exports/{exportId}": {"get": {"200", "404"}},
     "/api/v1/jobs/{jobId}/retry": {"post": {"200", "202", "404", "409", "502"}},
     "/api/v1/jobs/{jobId}/cancel": {"post": {"200", "404", "409"}},
     "/api/v1/jobs/{jobId}/screenshots/extract": {"post": {"200", "202", "400", "404"}},
@@ -100,6 +103,10 @@ _SCREENSHOT_REPLACE_VALIDATION_PATHS: set[tuple[str, str]] = {
 
 _SCREENSHOT_ANNOTATE_VALIDATION_PATHS: set[tuple[str, str]] = {
     ("POST", "/api/v1/anchors/{anchorId}/annotations"),
+}
+
+_EXPORT_VALIDATION_PATHS: set[tuple[str, str]] = {
+    ("POST", "/api/v1/jobs/{jobId}/exports"),
 }
 
 _SCREENSHOT_UPLOAD_VALIDATION_PATHS: set[tuple[str, str]] = {
@@ -625,6 +632,106 @@ def _apply_screenshot_contract_schema(schema: dict) -> None:
     not_found_delete["schema"] = {"$ref": "#/components/schemas/NoLeakNotFoundError"}
 
 
+def _apply_export_contract_schema(schema: dict) -> None:
+    """Force export request schema details to match the API contract."""
+    components = schema.setdefault("components", {}).setdefault("schemas", {})
+    create_export_request_schema = components.get("CreateExportRequest")
+    if create_export_request_schema:
+        create_export_request_properties = create_export_request_schema.setdefault("properties", {})
+        create_export_request_properties["format"] = {"$ref": "#/components/schemas/ExportFormat"}
+        create_export_request_properties["instruction_version_id"] = {"type": "string"}
+        create_export_request_properties["idempotency_key"] = {"type": "string"}
+
+    export_anchor_binding_schema = components.get("ExportAnchorBinding")
+    if export_anchor_binding_schema:
+        export_anchor_binding_properties = export_anchor_binding_schema.setdefault("properties", {})
+        export_anchor_binding_properties["rendered_asset_id"] = {"type": ["string", "null"]}
+
+    export_provenance_schema = components.get("ExportProvenance")
+    if export_provenance_schema:
+        export_provenance_properties = export_provenance_schema.setdefault("properties", {})
+        export_provenance_properties["anchors"] = {
+            "type": "array",
+            "items": {"$ref": "#/components/schemas/ExportAnchorBinding"},
+        }
+        export_provenance_properties["prompt_params_ref"] = {"type": "string"}
+        export_provenance_properties["generated_at"] = {"type": "string", "format": "date-time"}
+
+    export_schema = components.get("Export")
+    if export_schema:
+        export_properties = export_schema.setdefault("properties", {})
+        export_properties["format"] = {"$ref": "#/components/schemas/ExportFormat"}
+        export_properties["status"] = {"$ref": "#/components/schemas/ExportStatus"}
+        export_properties["provenance"] = {"$ref": "#/components/schemas/ExportProvenance"}
+        export_properties["provenance_frozen_at"] = {"type": "string", "format": "date-time"}
+        export_properties["last_audit_event"] = {"$ref": "#/components/schemas/ExportAuditEventType"}
+        export_properties["download_url"] = {"type": "string"}
+        export_properties["download_url_expires_at"] = {"type": "string", "format": "date-time"}
+
+    export_path_item = schema.get("paths", {}).get("/api/v1/jobs/{jobId}/exports")
+    if export_path_item:
+        export_operation = export_path_item.get("post")
+        if export_operation:
+            request_body = (
+                export_operation.setdefault("requestBody", {})
+                .setdefault("content", {})
+                .setdefault("application/json", {})
+            )
+            request_body["schema"] = {"$ref": "#/components/schemas/CreateExportRequest"}
+
+            export_responses = export_operation.setdefault("responses", {})
+            for status_code in ("200", "202"):
+                success = (
+                    export_responses.setdefault(status_code, {"description": "See API contract"})
+                    .setdefault("content", {})
+                    .setdefault("application/json", {})
+                )
+                success["schema"] = {"$ref": "#/components/schemas/Export"}
+
+            bad_request = (
+                export_responses.setdefault("400", {"description": "See API contract"})
+                .setdefault("content", {})
+                .setdefault("application/json", {})
+            )
+            bad_request["schema"] = {"$ref": "#/components/schemas/Error"}
+            bad_request["examples"] = {
+                "invalid_export_request": {
+                    "value": {
+                        "code": "EXPORT_REQUEST_INVALID",
+                        "message": "Unsupported format or invalid instruction version.",
+                    }
+                }
+            }
+
+            not_found = (
+                export_responses.setdefault("404", {"description": "See API contract"})
+                .setdefault("content", {})
+                .setdefault("application/json", {})
+            )
+            not_found["schema"] = {"$ref": "#/components/schemas/NoLeakNotFoundError"}
+
+    get_export_path_item = schema.get("paths", {}).get("/api/v1/exports/{exportId}")
+    if not get_export_path_item:
+        return
+    get_export_operation = get_export_path_item.get("get")
+    if not get_export_operation:
+        return
+
+    get_export_responses = get_export_operation.setdefault("responses", {})
+    success = (
+        get_export_responses.setdefault("200", {"description": "See API contract"})
+        .setdefault("content", {})
+        .setdefault("application/json", {})
+    )
+    success["schema"] = {"$ref": "#/components/schemas/Export"}
+    not_found = (
+        get_export_responses.setdefault("404", {"description": "See API contract"})
+        .setdefault("content", {})
+        .setdefault("application/json", {})
+    )
+    not_found["schema"] = {"$ref": "#/components/schemas/NoLeakNotFoundError"}
+
+
 async def _instruction_update_validation_payload(request: Request) -> VersionConflictError:
     """Normalize invalid PUT payloads into the endpoint's contract-safe 409 schema."""
     base_version = 0
@@ -647,8 +754,14 @@ async def _instruction_update_validation_payload(request: Request) -> VersionCon
 
 
 def create_app() -> FastAPI:
+    settings = get_settings()
+    signing_key_material = settings.export_download_signing_key or settings.callback_secret
     app = FastAPI(title="Howera API", version="1.1.0")
-    app.state.store = InMemoryStore()
+    app.state.store = InMemoryStore(
+        export_download_url_host=settings.export_download_url_host,
+        export_download_url_ttl_minutes=settings.export_download_url_ttl_minutes,
+        export_download_signing_key=signing_key_material.encode("utf-8"),
+    )
 
     @app.exception_handler(ApiError)
     async def handle_api_error(_, exc: ApiError) -> JSONResponse:
@@ -696,6 +809,12 @@ def create_app() -> FastAPI:
         if route_key in _SCREENSHOT_ANNOTATE_VALIDATION_PATHS:
             payload = ErrorResponse(code="VALIDATION_ERROR", message="Invalid annotation payload")
             return JSONResponse(status_code=400, content=payload.model_dump())
+        if route_key in _EXPORT_VALIDATION_PATHS:
+            payload = ErrorResponse(
+                code="EXPORT_REQUEST_INVALID",
+                message="Unsupported format or invalid instruction version.",
+            )
+            return JSONResponse(status_code=400, content=payload.model_dump())
         if route_key in _SCREENSHOT_UPLOAD_VALIDATION_PATHS:
             payload = NoLeakNotFoundError(code="RESOURCE_NOT_FOUND", message="Resource not found")
             return JSONResponse(status_code=404, content=payload.model_dump())
@@ -723,6 +842,7 @@ def create_app() -> FastAPI:
         _apply_transcript_contract_schema(schema)
         _apply_instruction_contract_schema(schema)
         _apply_screenshot_contract_schema(schema)
+        _apply_export_contract_schema(schema)
         app.openapi_schema = schema
         return app.openapi_schema
 

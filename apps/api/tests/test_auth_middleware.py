@@ -19,7 +19,7 @@ from app.adapters.auth.mock_auth import MockTokenVerifier
 from app.core.config import Settings, get_settings
 from app.main import create_app
 from app.routes.dependencies import get_project_service, get_token_verifier
-from app.schemas.job import JobStatus
+from app.schemas.job import ExportStatus, JobStatus
 from app.schemas.project import Project
 
 
@@ -73,6 +73,8 @@ class AuthApiTests(_SettingsEnvCase):
         self.assertIn("/api/v1/jobs/{jobId}/transcript", paths)
         self.assertIn("/api/v1/jobs/{jobId}/confirm-upload", paths)
         self.assertIn("/api/v1/jobs/{jobId}/run", paths)
+        self.assertIn("/api/v1/jobs/{jobId}/exports", paths)
+        self.assertIn("/api/v1/exports/{exportId}", paths)
         self.assertIn("/api/v1/jobs/{jobId}/retry", paths)
         self.assertIn("/api/v1/jobs/{jobId}/cancel", paths)
         self.assertIn("/api/v1/jobs/{jobId}/screenshots/extract", paths)
@@ -108,6 +110,14 @@ class AuthApiTests(_SettingsEnvCase):
         self.assertEqual(
             set(paths["/api/v1/jobs/{jobId}/run"]["post"]["responses"].keys()),
             {"200", "202", "404", "409", "502"},
+        )
+        self.assertEqual(
+            set(paths["/api/v1/jobs/{jobId}/exports"]["post"]["responses"].keys()),
+            {"200", "202", "400", "404"},
+        )
+        self.assertEqual(
+            set(paths["/api/v1/exports/{exportId}"]["get"]["responses"].keys()),
+            {"200", "404"},
         )
         self.assertEqual(
             set(paths["/api/v1/jobs/{jobId}/retry"]["post"]["responses"].keys()),
@@ -220,6 +230,34 @@ class AuthApiTests(_SettingsEnvCase):
         self.assertEqual(
             paths["/api/v1/jobs/{jobId}/run"]["post"]["responses"]["502"]["content"]["application/json"]["schema"]["$ref"],
             "#/components/schemas/UpstreamDispatchError",
+        )
+        self.assertEqual(
+            paths["/api/v1/jobs/{jobId}/exports"]["post"]["requestBody"]["content"]["application/json"]["schema"]["$ref"],
+            "#/components/schemas/CreateExportRequest",
+        )
+        self.assertEqual(
+            paths["/api/v1/jobs/{jobId}/exports"]["post"]["responses"]["200"]["content"]["application/json"]["schema"]["$ref"],
+            "#/components/schemas/Export",
+        )
+        self.assertEqual(
+            paths["/api/v1/jobs/{jobId}/exports"]["post"]["responses"]["202"]["content"]["application/json"]["schema"]["$ref"],
+            "#/components/schemas/Export",
+        )
+        self.assertEqual(
+            paths["/api/v1/jobs/{jobId}/exports"]["post"]["responses"]["400"]["content"]["application/json"]["schema"]["$ref"],
+            "#/components/schemas/Error",
+        )
+        self.assertEqual(
+            paths["/api/v1/jobs/{jobId}/exports"]["post"]["responses"]["404"]["content"]["application/json"]["schema"]["$ref"],
+            "#/components/schemas/NoLeakNotFoundError",
+        )
+        self.assertEqual(
+            paths["/api/v1/exports/{exportId}"]["get"]["responses"]["200"]["content"]["application/json"]["schema"]["$ref"],
+            "#/components/schemas/Export",
+        )
+        self.assertEqual(
+            paths["/api/v1/exports/{exportId}"]["get"]["responses"]["404"]["content"]["application/json"]["schema"]["$ref"],
+            "#/components/schemas/NoLeakNotFoundError",
         )
         self.assertEqual(
             paths["/api/v1/jobs/{jobId}/retry"]["post"]["responses"]["409"]["content"]["application/json"]["schema"]["$ref"],
@@ -704,6 +742,74 @@ class AuthApiTests(_SettingsEnvCase):
         self.assertEqual(
             screenshot_mime_type_schema["enum"],
             ["image/png", "image/jpeg", "image/webp"],
+        )
+        create_export_request_schema = response.json()["components"]["schemas"]["CreateExportRequest"]
+        self.assertEqual(
+            set(create_export_request_schema["required"]),
+            {"format", "instruction_version_id"},
+        )
+        self.assertEqual(
+            create_export_request_schema["properties"]["format"]["$ref"],
+            "#/components/schemas/ExportFormat",
+        )
+        self.assertEqual(create_export_request_schema["properties"]["idempotency_key"]["type"], "string")
+        export_format_schema = response.json()["components"]["schemas"]["ExportFormat"]
+        self.assertEqual(export_format_schema["enum"], ["PDF", "MD_ZIP"])
+        export_status_schema = response.json()["components"]["schemas"]["ExportStatus"]
+        self.assertEqual(export_status_schema["enum"], ["REQUESTED", "RUNNING", "SUCCEEDED", "FAILED"])
+        export_audit_event_type_schema = response.json()["components"]["schemas"]["ExportAuditEventType"]
+        self.assertEqual(
+            export_audit_event_type_schema["enum"],
+            ["EXPORT_REQUESTED", "EXPORT_STARTED", "EXPORT_SUCCEEDED", "EXPORT_FAILED"],
+        )
+        export_anchor_binding_schema = response.json()["components"]["schemas"]["ExportAnchorBinding"]
+        self.assertEqual(
+            set(export_anchor_binding_schema["required"]),
+            {"anchor_id", "active_asset_id"},
+        )
+        export_provenance_schema = response.json()["components"]["schemas"]["ExportProvenance"]
+        self.assertEqual(
+            set(export_provenance_schema["required"]),
+            {
+                "instruction_version_id",
+                "screenshot_set_hash",
+                "anchors",
+                "instruction_snapshot_id",
+                "model_profile_id",
+                "prompt_template_id",
+            },
+        )
+        self.assertEqual(
+            export_provenance_schema["properties"]["anchors"]["items"]["$ref"],
+            "#/components/schemas/ExportAnchorBinding",
+        )
+        self.assertEqual(export_provenance_schema["properties"]["instruction_snapshot_id"]["type"], "string")
+        self.assertEqual(export_provenance_schema["properties"]["model_profile_id"]["type"], "string")
+        self.assertEqual(export_provenance_schema["properties"]["prompt_template_id"]["type"], "string")
+        self.assertEqual(export_provenance_schema["properties"]["prompt_params_ref"]["type"], "string")
+        export_schema = response.json()["components"]["schemas"]["Export"]
+        self.assertEqual(
+            set(export_schema["required"]),
+            {
+                "id",
+                "job_id",
+                "format",
+                "status",
+                "instruction_version_id",
+                "identity_key",
+                "screenshot_set_hash",
+                "created_at",
+                "updated_at",
+            },
+        )
+        self.assertEqual(export_schema["properties"]["format"]["$ref"], "#/components/schemas/ExportFormat")
+        self.assertEqual(export_schema["properties"]["status"]["$ref"], "#/components/schemas/ExportStatus")
+        self.assertEqual(export_schema["properties"]["provenance"]["$ref"], "#/components/schemas/ExportProvenance")
+        self.assertEqual(export_schema["properties"]["provenance_frozen_at"]["type"], "string")
+        self.assertEqual(export_schema["properties"]["provenance_frozen_at"]["format"], "date-time")
+        self.assertEqual(
+            export_schema["properties"]["last_audit_event"]["$ref"],
+            "#/components/schemas/ExportAuditEventType",
         )
         instruction_parameters = paths["/api/v1/instructions/{instructionId}"]["get"]["parameters"]
         version_parameter = next(item for item in instruction_parameters if item["name"] == "version")
@@ -1389,6 +1495,56 @@ class AuthApiTests(_SettingsEnvCase):
         self.assertRegex(failure_joined, r"job_id=jid-[0-9a-f]{12}")
         self.assertNotIn("UPSTREAM-SECRET-DISPATCH-DETAIL", failure_joined)
         self.assertNotIn(failure_video_uri, failure_joined)
+
+    def test_export_status_retrieval_does_not_log_signed_download_credentials(self) -> None:
+        app = create_app()
+        client = TestClient(app)
+        store = app.state.store
+        owner_headers = {"Authorization": "Bearer test:owner-export-log-1:editor"}
+
+        project = client.post("/api/v1/projects", headers=owner_headers, json={"name": "Owned"}).json()
+        created_job = client.post(f"/api/v1/projects/{project['id']}/jobs", headers=owner_headers).json()
+        store.create_instruction_version(
+            owner_id="owner-export-log-1",
+            instruction_id="inst-export-log-1",
+            job_id=created_job["id"],
+            version=1,
+            markdown="# Intro {#intro}",
+        )
+        export_response = client.post(
+            f"/api/v1/jobs/{created_job['id']}/exports",
+            headers=owner_headers,
+            json={"format": "PDF", "instruction_version_id": "1"},
+        )
+        self.assertEqual(export_response.status_code, 202)
+        export_id = export_response.json()["id"]
+        store.exports_by_id[export_id].status = ExportStatus.SUCCEEDED
+        store.exports_by_id[export_id].provenance_frozen_at = datetime.now(UTC)
+
+        with self.assertNoLogs("app.services.jobs", level="INFO"):
+            status_response = client.get(f"/api/v1/exports/{export_id}", headers=owner_headers)
+
+        self.assertEqual(status_response.status_code, 200)
+        self.assertIn("download_url", status_response.json())
+
+    def test_store_uses_configured_export_download_settings(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "HOWERA_EXPORT_DOWNLOAD_URL_HOST": "downloads.configured.local",
+                "HOWERA_EXPORT_DOWNLOAD_URL_TTL_MINUTES": "30",
+                "HOWERA_EXPORT_DOWNLOAD_SIGNING_KEY": "configured-export-signing-key",
+            },
+            clear=False,
+        ):
+            get_settings.cache_clear()
+            app = create_app()
+
+        store = app.state.store
+        self.assertEqual(store.export_download_url_host, "downloads.configured.local")
+        self.assertEqual(store.export_download_url_ttl_minutes, 30)
+        self.assertEqual(store.export_download_signing_key, b"configured-export-signing-key")
+        get_settings.cache_clear()
 
 
 class AuthAdapterUnitTests(unittest.TestCase):

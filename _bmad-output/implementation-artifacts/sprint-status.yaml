@@ -67,7 +67,7 @@ development_status:
   4-5-request-targeted-regeneration-with-idempotency-and-provenance: done
   4-6-poll-regenerate-task-status-with-sanitized-outcomes: done
   epic-4-retrospective: optional
-  epic-5: in-progress
+  epic-5: done
   5-1-extract-screenshot-with-alignment-parameters-and-anchor-metadata: done
   5-2-replace-existing-screenshot-asset-for-anchor-with-versioning: done
   5-3-soft-delete-screenshot-asset-and-resolve-active-fallback: done
@@ -75,11 +75,11 @@ development_status:
   5-5-annotation-operations-schema-and-deterministic-rendering: done
   5-6-anchor-addressing-persistence-policy-and-cross-version-traceability: done
   epic-5-retrospective: optional
-  epic-6: backlog
-  6-1-create-export-request-bound-to-exact-instruction-version: backlog
-  6-2-persist-complete-export-provenance-and-snapshot-references: backlog
-  6-3-execute-export-fsm-and-freeze-provenance-on-success: backlog
-  6-4-retrieve-export-status-by-export-id: backlog
-  6-5-issue-strictly-scoped-signed-download-url: backlog
-  6-6-emit-canonical-export-audit-events: backlog
+  epic-6: done
+  6-1-create-export-request-bound-to-exact-instruction-version: done
+  6-2-persist-complete-export-provenance-and-snapshot-references: done
+  6-3-execute-export-fsm-and-freeze-provenance-on-success: done
+  6-4-retrieve-export-status-by-export-id: done
+  6-5-issue-strictly-scoped-signed-download-url: done
+  6-6-emit-canonical-export-audit-events: done
   epic-6-retrospective: optional

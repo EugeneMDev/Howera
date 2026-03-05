@@ -21,7 +21,7 @@ _ALLOWED_TRANSITIONS: dict[JobStatus, set[JobStatus]] = {
     JobStatus.DRAFT_READY: {JobStatus.EDITING, JobStatus.REGENERATING, JobStatus.EXPORTING, JobStatus.DONE},
     JobStatus.EDITING: {JobStatus.REGENERATING, JobStatus.EXPORTING, JobStatus.DONE, JobStatus.CANCELLED},
     JobStatus.REGENERATING: {JobStatus.DRAFT_READY, JobStatus.FAILED, JobStatus.CANCELLED},
-    JobStatus.EXPORTING: {JobStatus.DONE, JobStatus.FAILED, JobStatus.CANCELLED},
+    JobStatus.EXPORTING: {JobStatus.DONE, JobStatus.EDITING, JobStatus.FAILED, JobStatus.CANCELLED},
     JobStatus.DONE: set(),
     JobStatus.FAILED: set(),
     JobStatus.CANCELLED: set(),

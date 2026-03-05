@@ -15,8 +15,10 @@ from uuid import uuid4
 
 from pydantic import ValidationError
 
+from app.domain.export_fsm import ensure_export_transition
 from app.domain.instruction_validation import validate_instruction_markdown
 from app.domain.job_fsm import ensure_transition
+from app.errors import ApiError
 from app.schemas.instruction import (
     CharRange,
     RegenerateProvenance,
@@ -29,6 +31,10 @@ from app.schemas.job import (
     ArtifactManifest,
     ConfirmCustomUploadRequest,
     CreateCustomUploadRequest,
+    ExportAuditEventType,
+    ExportFormat,
+    ExportProvenance,
+    ExportStatus,
     ScreenshotFormat,
     JobStatus,
     ScreenshotExtractionRequest,
@@ -64,6 +70,11 @@ _SCREENSHOT_FORMAT_TO_MIME_TYPE: dict[str, str] = {
 _CUSTOM_UPLOAD_URL_SCHEME = "https"
 _CUSTOM_UPLOAD_URL_HOST = "uploads.howera.local"
 _CUSTOM_UPLOAD_SIGNING_KEY = b"howera-custom-upload-v1"
+_EXPORT_DOWNLOAD_URL_SCHEME = "https"
+_EXPORT_FORMAT_TO_EXTENSION: dict[ExportFormat, str] = {
+    ExportFormat.PDF: ".pdf",
+    ExportFormat.MD_ZIP: ".zip",
+}
 _CUSTOM_UPLOAD_MIME_TO_EXTENSION: dict[str, str] = {
     ScreenshotMimeType.PNG.value: ".png",
     ScreenshotMimeType.JPEG.value: ".jpg",
@@ -313,6 +324,49 @@ class ScreenshotAnnotationResultRecord:
 
 
 @dataclass(slots=True)
+class ExportAnchorBindingRecord:
+    anchor_id: str
+    active_asset_id: str
+    rendered_asset_id: str | None
+
+
+@dataclass(slots=True)
+class ExportRecord:
+    export_id: str
+    owner_id: str
+    job_id: str
+    format: ExportFormat
+    status: ExportStatus
+    instruction_version_id: str
+    identity_key: str
+    screenshot_set_hash: str
+    provenance: ExportProvenance
+    provenance_frozen_at: datetime | None
+    last_audit_event: ExportAuditEventType | None
+    download_url: str | None
+    download_url_expires_at: datetime | None
+    created_at: datetime
+    updated_at: datetime
+
+
+@dataclass(slots=True)
+class ExportAuditRecord:
+    event_type: ExportAuditEventType
+    export_id: str
+    identity_key: str
+    occurred_at: datetime
+    recorded_at: datetime
+    correlation_id: str
+
+
+@dataclass(slots=True)
+class ExportManifestLinkageRecord:
+    export_id: str
+    identity_key: str
+    linked_at: datetime
+
+
+@dataclass(slots=True)
 class InMemoryStore:
     """Simple, deterministic persistence layer for scaffolding and tests."""
 
@@ -345,6 +399,10 @@ class InMemoryStore:
         tuple[str, str, str],
         AttachUploadReplayRecord,
     ] = field(default_factory=dict)
+    exports_by_id: dict[str, ExportRecord] = field(default_factory=dict)
+    export_id_by_owner_job_identity: dict[tuple[str, str, str], str] = field(default_factory=dict)
+    export_linkages_by_job: dict[str, list[ExportManifestLinkageRecord]] = field(default_factory=dict)
+    export_audit_events: list[ExportAuditRecord] = field(default_factory=list)
     transcript_segments_by_job: dict[str, list[TranscriptSegment]] = field(default_factory=dict)
     project_write_count: int = 0
     job_write_count: int = 0
@@ -353,6 +411,11 @@ class InMemoryStore:
     regenerate_task_write_count: int = 0
     regenerate_audit_write_count: int = 0
     screenshot_task_write_count: int = 0
+    export_write_count: int = 0
+    export_audit_write_count: int = 0
+    export_download_url_host: str = "downloads.howera.local"
+    export_download_url_ttl_minutes: int = 15
+    export_download_signing_key: bytes | str = field(default_factory=lambda: uuid4().hex.encode("utf-8"))
     dispatch_failure_message: str | None = None
     callback_mutation_failpoint_event_id: str | None = None
     callback_mutation_failpoint_stage: Literal[
@@ -363,6 +426,24 @@ class InMemoryStore:
     ] | None = None
     callback_mutation_failpoint_message: str = "Injected callback persistence failure"
     annotation_render_failure_message: str | None = None
+
+    def __post_init__(self) -> None:
+        normalized_host = self.export_download_url_host.strip()
+        if not normalized_host:
+            raise ValueError("export_download_url_host must be non-empty")
+        self.export_download_url_host = normalized_host
+
+        if self.export_download_url_ttl_minutes < 1:
+            raise ValueError("export_download_url_ttl_minutes must be >= 1")
+
+        key_material = self.export_download_signing_key
+        if isinstance(key_material, str):
+            normalized_key = key_material.encode("utf-8")
+        else:
+            normalized_key = key_material
+        if not normalized_key:
+            raise ValueError("export_download_signing_key must be non-empty")
+        self.export_download_signing_key = normalized_key
 
     def create_project(self, owner_id: str, name: str) -> ProjectRecord:
         now = datetime.now(UTC)
@@ -480,6 +561,444 @@ class InMemoryStore:
                 return self._copy_instruction_record(record)
         return None
 
+    def get_instruction_for_owner_job_version(
+        self,
+        *,
+        owner_id: str,
+        job_id: str,
+        version: int,
+    ) -> InstructionRecord | None:
+        matches: list[InstructionRecord] = []
+        for instruction_id in sorted(self.instructions_by_id.keys()):
+            history = self.instructions_by_id[instruction_id]
+            for record in history:
+                if record.owner_id == owner_id and record.job_id == job_id and record.version == version:
+                    matches.append(record)
+
+        if len(matches) != 1:
+            return None
+        return self._copy_instruction_record(matches[0])
+
+    def list_export_anchor_bindings(
+        self,
+        *,
+        owner_id: str,
+        job_id: str,
+        instruction_id: str,
+        instruction_version_id: str,
+    ) -> list[ExportAnchorBindingRecord]:
+        bindings: list[ExportAnchorBindingRecord] = []
+        for anchor in self.screenshot_anchors_by_id.values():
+            if (
+                anchor.owner_id != owner_id
+                or anchor.job_id != job_id
+                or anchor.instruction_id != instruction_id
+                or anchor.instruction_version_id != instruction_version_id
+            ):
+                continue
+            active_asset_id = anchor.active_asset_id
+            if not active_asset_id:
+                continue
+            active_asset = self.screenshot_assets_by_id.get(active_asset_id)
+            if (
+                active_asset is None
+                or active_asset.owner_id != owner_id
+                or active_asset.job_id != job_id
+                or active_asset.anchor_id != anchor.anchor_id
+                or active_asset.is_deleted
+            ):
+                continue
+            rendered_asset_id = active_asset_id if active_asset.kind == "ANNOTATED" else None
+            bindings.append(
+                ExportAnchorBindingRecord(
+                    anchor_id=anchor.anchor_id,
+                    active_asset_id=active_asset_id,
+                    rendered_asset_id=rendered_asset_id,
+                )
+            )
+
+        bindings.sort(
+            key=lambda record: (
+                record.anchor_id,
+                record.active_asset_id,
+                record.rendered_asset_id or "",
+            )
+        )
+        return [
+            ExportAnchorBindingRecord(
+                anchor_id=record.anchor_id,
+                active_asset_id=record.active_asset_id,
+                rendered_asset_id=record.rendered_asset_id,
+            )
+            for record in bindings
+        ]
+
+    @staticmethod
+    def build_export_screenshot_set_hash(*, bindings: list[ExportAnchorBindingRecord]) -> str:
+        canonical_bindings = [
+            {
+                "anchor_id": binding.anchor_id,
+                "active_asset_id": binding.active_asset_id,
+                "rendered_asset_id": binding.rendered_asset_id,
+            }
+            for binding in sorted(
+                bindings,
+                key=lambda record: (
+                    record.anchor_id,
+                    record.active_asset_id,
+                    record.rendered_asset_id or "",
+                ),
+            )
+        ]
+        encoded = json.dumps(
+            {"anchors": canonical_bindings},
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode("utf-8")
+        return hashlib.sha256(encoded).hexdigest()
+
+    @staticmethod
+    def build_export_identity_key(
+        *,
+        instruction_version_id: str,
+        export_format: ExportFormat,
+        screenshot_set_hash: str,
+    ) -> str:
+        return "|".join((instruction_version_id, export_format.value, screenshot_set_hash))
+
+    def create_export_request(
+        self,
+        *,
+        owner_id: str,
+        job_id: str,
+        export_format: ExportFormat,
+        instruction_version_id: str,
+        identity_key: str,
+        screenshot_set_hash: str,
+        provenance: ExportProvenance,
+        occurred_at: datetime | None = None,
+        correlation_id: str | None = None,
+    ) -> tuple[ExportRecord, bool]:
+        request_key = (owner_id, job_id, identity_key)
+        existing_export_id = self.export_id_by_owner_job_identity.get(request_key)
+        if existing_export_id is not None:
+            existing_export = self.exports_by_id.get(existing_export_id)
+            if existing_export is not None:
+                return self._copy_export_record(existing_export), True
+            self.export_id_by_owner_job_identity.pop(request_key, None)
+
+        now = datetime.now(UTC)
+        export_id = f"export-{uuid4()}"
+        export_record = ExportRecord(
+            export_id=export_id,
+            owner_id=owner_id,
+            job_id=job_id,
+            format=export_format,
+            status=ExportStatus.REQUESTED,
+            instruction_version_id=instruction_version_id,
+            identity_key=identity_key,
+            screenshot_set_hash=screenshot_set_hash,
+            provenance=provenance.model_copy(deep=True),
+            provenance_frozen_at=None,
+            last_audit_event=ExportAuditEventType.EXPORT_REQUESTED,
+            download_url=None,
+            download_url_expires_at=None,
+            created_at=now,
+            updated_at=now,
+        )
+        self.exports_by_id[export_id] = export_record
+        self.export_id_by_owner_job_identity[request_key] = export_id
+        self.export_write_count += 1
+        self._append_export_audit_record(
+            event_type=ExportAuditEventType.EXPORT_REQUESTED,
+            export_record=export_record,
+            occurred_at=occurred_at or now,
+            correlation_id=correlation_id,
+        )
+        return self._copy_export_record(export_record), False
+
+    def get_export_for_owner(
+        self,
+        *,
+        owner_id: str,
+        export_id: str,
+    ) -> ExportRecord | None:
+        record = self.exports_by_id.get(export_id)
+        if record is None or record.owner_id != owner_id:
+            return None
+        return self._copy_export_record(record)
+
+    def issue_export_download_url(
+        self,
+        *,
+        owner_id: str,
+        export_id: str,
+    ) -> tuple[str, datetime]:
+        export_record = self._get_export_record_for_owner_mutable(owner_id=owner_id, export_id=export_id)
+        if export_record is None:
+            raise ApiError(status_code=404, code="RESOURCE_NOT_FOUND", message="Resource not found")
+        if export_record.status is not ExportStatus.SUCCEEDED:
+            raise ApiError(
+                status_code=409,
+                code="EXPORT_NOT_READY",
+                message="Export download URL is available only for SUCCEEDED.",
+                details={"current_status": export_record.status},
+            )
+
+        issued_at = datetime.now(UTC).replace(microsecond=0)
+        expires_at = issued_at + timedelta(minutes=self.export_download_url_ttl_minutes)
+        return self._build_export_download_url(
+            owner_id=owner_id,
+            export_id=export_id,
+            export_format=export_record.format,
+            expires_at=expires_at,
+        ), expires_at
+
+    def start_export_execution(
+        self,
+        *,
+        owner_id: str,
+        export_id: str,
+        transition_job_status: bool = True,
+        occurred_at: datetime | None = None,
+        correlation_id: str | None = None,
+    ) -> tuple[ExportRecord, bool]:
+        export_record = self._get_export_record_for_owner_mutable(owner_id=owner_id, export_id=export_id)
+        if export_record is None:
+            raise ApiError(status_code=404, code="RESOURCE_NOT_FOUND", message="Resource not found")
+
+        if export_record.status in {
+            ExportStatus.RUNNING,
+            ExportStatus.SUCCEEDED,
+            ExportStatus.FAILED,
+        }:
+            return self._copy_export_record(export_record), True
+
+        job_record = self.jobs.get(export_record.job_id)
+        if job_record is None or job_record.owner_id != owner_id:
+            raise ApiError(status_code=404, code="RESOURCE_NOT_FOUND", message="Resource not found")
+
+        previous_export_status = export_record.status
+        previous_export_updated_at = export_record.updated_at
+        previous_export_event = export_record.last_audit_event
+        previous_export_write_count = self.export_write_count
+        previous_export_audit_count = len(self.export_audit_events)
+        previous_export_audit_write_count = self.export_audit_write_count
+        previous_job_status = job_record.status
+        previous_job_updated_at = job_record.updated_at
+        previous_job_write_count = self.job_write_count
+
+        try:
+            ensure_export_transition(export_record.status, ExportStatus.RUNNING)
+            now = datetime.now(UTC)
+            export_record.status = ExportStatus.RUNNING
+            export_record.updated_at = now
+            export_record.last_audit_event = ExportAuditEventType.EXPORT_STARTED
+            self.export_write_count += 1
+
+            if transition_job_status and job_record.status is not JobStatus.EXPORTING:
+                self.transition_job_status(job=job_record, new_status=JobStatus.EXPORTING)
+
+            self._append_export_audit_record(
+                event_type=ExportAuditEventType.EXPORT_STARTED,
+                export_record=export_record,
+                occurred_at=occurred_at or now,
+                correlation_id=correlation_id,
+            )
+            return self._copy_export_record(export_record), False
+        except Exception:
+            export_record.status = previous_export_status
+            export_record.updated_at = previous_export_updated_at
+            export_record.last_audit_event = previous_export_event
+            self.export_write_count = previous_export_write_count
+            if len(self.export_audit_events) > previous_export_audit_count:
+                del self.export_audit_events[previous_export_audit_count:]
+            self.export_audit_write_count = previous_export_audit_write_count
+            job_record.status = previous_job_status
+            job_record.updated_at = previous_job_updated_at
+            self.job_write_count = previous_job_write_count
+            raise
+
+    def complete_export_success(
+        self,
+        *,
+        owner_id: str,
+        export_id: str,
+        transition_job_status: bool = True,
+        occurred_at: datetime | None = None,
+        correlation_id: str | None = None,
+    ) -> tuple[ExportRecord, bool]:
+        export_record = self._get_export_record_for_owner_mutable(owner_id=owner_id, export_id=export_id)
+        if export_record is None:
+            raise ApiError(status_code=404, code="RESOURCE_NOT_FOUND", message="Resource not found")
+
+        if export_record.status is ExportStatus.SUCCEEDED:
+            return self._copy_export_record(export_record), True
+
+        job_record = self.jobs.get(export_record.job_id)
+        if job_record is None or job_record.owner_id != owner_id:
+            raise ApiError(status_code=404, code="RESOURCE_NOT_FOUND", message="Resource not found")
+
+        previous_export_status = export_record.status
+        previous_export_updated_at = export_record.updated_at
+        previous_export_event = export_record.last_audit_event
+        previous_frozen_at = export_record.provenance_frozen_at
+        previous_export_write_count = self.export_write_count
+        previous_export_audit_count = len(self.export_audit_events)
+        previous_export_audit_write_count = self.export_audit_write_count
+        previous_job_status = job_record.status
+        previous_job_updated_at = job_record.updated_at
+        previous_job_manifest = job_record.manifest.model_copy(deep=True) if job_record.manifest is not None else None
+        previous_job_write_count = self.job_write_count
+        previous_linkages = [
+            self._copy_export_manifest_linkage_record(record)
+            for record in self.export_linkages_by_job.get(job_record.id, [])
+        ]
+        had_linkages = job_record.id in self.export_linkages_by_job
+
+        try:
+            ensure_export_transition(export_record.status, ExportStatus.SUCCEEDED)
+            now = datetime.now(UTC)
+            export_record.status = ExportStatus.SUCCEEDED
+            export_record.updated_at = now
+            export_record.last_audit_event = ExportAuditEventType.EXPORT_SUCCEEDED
+            if export_record.provenance_frozen_at is None:
+                export_record.provenance_frozen_at = now
+            self.export_write_count += 1
+
+            manifest = job_record.manifest.model_copy(deep=True) if job_record.manifest is not None else ArtifactManifest()
+            existing_exports = list(manifest.exports or [])
+            manifest_changed = False
+            if export_record.export_id not in existing_exports:
+                existing_exports.append(export_record.export_id)
+                manifest.exports = existing_exports
+                job_record.manifest = manifest
+                manifest_changed = True
+            self._record_export_manifest_linkage(
+                job_id=job_record.id,
+                export_id=export_record.export_id,
+                identity_key=export_record.identity_key,
+                linked_at=now,
+            )
+
+            if transition_job_status and job_record.status is not JobStatus.DONE:
+                self.transition_job_status(job=job_record, new_status=JobStatus.DONE)
+            elif manifest_changed:
+                job_record.updated_at = now
+                self.job_write_count += 1
+
+            self._append_export_audit_record(
+                event_type=ExportAuditEventType.EXPORT_SUCCEEDED,
+                export_record=export_record,
+                occurred_at=occurred_at or now,
+                correlation_id=correlation_id,
+            )
+
+            return self._copy_export_record(export_record), False
+        except Exception:
+            export_record.status = previous_export_status
+            export_record.updated_at = previous_export_updated_at
+            export_record.last_audit_event = previous_export_event
+            export_record.provenance_frozen_at = previous_frozen_at
+            self.export_write_count = previous_export_write_count
+            if len(self.export_audit_events) > previous_export_audit_count:
+                del self.export_audit_events[previous_export_audit_count:]
+            self.export_audit_write_count = previous_export_audit_write_count
+            job_record.status = previous_job_status
+            job_record.updated_at = previous_job_updated_at
+            job_record.manifest = previous_job_manifest
+            self.job_write_count = previous_job_write_count
+            if had_linkages:
+                self.export_linkages_by_job[job_record.id] = previous_linkages
+            else:
+                self.export_linkages_by_job.pop(job_record.id, None)
+            raise
+
+    def complete_export_failure(
+        self,
+        *,
+        owner_id: str,
+        export_id: str,
+        transition_job_status: bool = True,
+        occurred_at: datetime | None = None,
+        correlation_id: str | None = None,
+    ) -> tuple[ExportRecord, bool]:
+        export_record = self._get_export_record_for_owner_mutable(owner_id=owner_id, export_id=export_id)
+        if export_record is None:
+            raise ApiError(status_code=404, code="RESOURCE_NOT_FOUND", message="Resource not found")
+
+        if export_record.status is ExportStatus.FAILED:
+            return self._copy_export_record(export_record), True
+
+        job_record = self.jobs.get(export_record.job_id)
+        if job_record is None or job_record.owner_id != owner_id:
+            raise ApiError(status_code=404, code="RESOURCE_NOT_FOUND", message="Resource not found")
+
+        previous_export_status = export_record.status
+        previous_export_updated_at = export_record.updated_at
+        previous_export_event = export_record.last_audit_event
+        previous_export_write_count = self.export_write_count
+        previous_export_audit_count = len(self.export_audit_events)
+        previous_export_audit_write_count = self.export_audit_write_count
+        previous_job_status = job_record.status
+        previous_job_updated_at = job_record.updated_at
+        previous_job_write_count = self.job_write_count
+
+        try:
+            ensure_export_transition(export_record.status, ExportStatus.FAILED)
+            now = datetime.now(UTC)
+            export_record.status = ExportStatus.FAILED
+            export_record.updated_at = now
+            export_record.last_audit_event = ExportAuditEventType.EXPORT_FAILED
+            self.export_write_count += 1
+
+            if transition_job_status and job_record.status is not JobStatus.EDITING:
+                self.transition_job_status(job=job_record, new_status=JobStatus.EDITING)
+
+            self._append_export_audit_record(
+                event_type=ExportAuditEventType.EXPORT_FAILED,
+                export_record=export_record,
+                occurred_at=occurred_at or now,
+                correlation_id=correlation_id,
+            )
+
+            return self._copy_export_record(export_record), False
+        except Exception:
+            export_record.status = previous_export_status
+            export_record.updated_at = previous_export_updated_at
+            export_record.last_audit_event = previous_export_event
+            self.export_write_count = previous_export_write_count
+            if len(self.export_audit_events) > previous_export_audit_count:
+                del self.export_audit_events[previous_export_audit_count:]
+            self.export_audit_write_count = previous_export_audit_write_count
+            job_record.status = previous_job_status
+            job_record.updated_at = previous_job_updated_at
+            self.job_write_count = previous_job_write_count
+            raise
+
+    def _record_export_manifest_linkage(
+        self,
+        *,
+        job_id: str,
+        export_id: str,
+        identity_key: str,
+        linked_at: datetime,
+    ) -> None:
+        existing = self.export_linkages_by_job.get(job_id, [])
+        for record in existing:
+            if record.export_id == export_id and record.identity_key == identity_key:
+                return
+        existing.append(
+            ExportManifestLinkageRecord(
+                export_id=export_id,
+                identity_key=identity_key,
+                linked_at=linked_at,
+            )
+        )
+        existing.sort(key=lambda record: (record.export_id, record.identity_key))
+        self.export_linkages_by_job[job_id] = existing
+
     def set_transcript_segments_for_job(self, *, job_id: str, segments: list[TranscriptSegment]) -> None:
         self.transcript_segments_by_job[job_id] = [segment.model_copy(deep=True) for segment in segments]
 
@@ -561,6 +1080,21 @@ class InMemoryStore:
         had_latest_callback = job.id in self.latest_callback_at_by_job
         previous_transcript_segments = self.transcript_segments_by_job.get(job.id)
         had_transcript_segments = job.id in self.transcript_segments_by_job
+        export_id = self._extract_export_id_from_updates(callback_event.artifact_updates)
+        previous_export_record: ExportRecord | None = None
+        had_export_record = False
+        previous_export_write_count = self.export_write_count
+        previous_export_audit_count = len(self.export_audit_events)
+        previous_export_audit_write_count = self.export_audit_write_count
+        previous_export_linkages = [
+            self._copy_export_manifest_linkage_record(record) for record in self.export_linkages_by_job.get(job.id, [])
+        ]
+        had_export_linkages = job.id in self.export_linkages_by_job
+        if export_id is not None:
+            existing_export_record = self.exports_by_id.get(export_id)
+            had_export_record = export_id in self.exports_by_id
+            if existing_export_record is not None:
+                previous_export_record = self._copy_export_record(existing_export_record)
 
         try:
             if job.status is JobStatus.FAILED and job.retry_resume_from_status is not None and job.retry_dispatch_id is not None:
@@ -569,6 +1103,11 @@ class InMemoryStore:
             else:
                 self.transition_job_status(job=job, new_status=callback_event.status)
             self._maybe_raise_callback_failpoint(event_id=callback_event.event_id, stage="after_status")
+            self._apply_export_execution_callback(
+                job=job,
+                callback_event=callback_event,
+                export_id=export_id,
+            )
 
             job.manifest = self._merge_artifact_updates(
                 current_manifest=job.manifest,
@@ -620,7 +1159,67 @@ class InMemoryStore:
                 ]
             else:
                 self.transcript_segments_by_job.pop(job.id, None)
+            self.export_write_count = previous_export_write_count
+            if len(self.export_audit_events) > previous_export_audit_count:
+                del self.export_audit_events[previous_export_audit_count:]
+            self.export_audit_write_count = previous_export_audit_write_count
+            if export_id is not None:
+                if had_export_record and previous_export_record is not None:
+                    self.exports_by_id[export_id] = previous_export_record
+                else:
+                    self.exports_by_id.pop(export_id, None)
+            if had_export_linkages:
+                self.export_linkages_by_job[job.id] = previous_export_linkages
+            else:
+                self.export_linkages_by_job.pop(job.id, None)
             raise
+
+    @staticmethod
+    def _extract_export_id_from_updates(artifact_updates: dict[str, Any] | None) -> str | None:
+        if artifact_updates is None:
+            return None
+        export_id = artifact_updates.get("export_id")
+        if not isinstance(export_id, str):
+            return None
+        normalized = export_id.strip()
+        return normalized or None
+
+    def _apply_export_execution_callback(
+        self,
+        *,
+        job: JobRecord,
+        callback_event: CallbackEventRecord,
+        export_id: str | None,
+    ) -> None:
+        if export_id is None:
+            return
+
+        if callback_event.status is JobStatus.EXPORTING:
+            self.start_export_execution(
+                owner_id=job.owner_id,
+                export_id=export_id,
+                transition_job_status=False,
+                occurred_at=callback_event.occurred_at,
+                correlation_id=callback_event.correlation_id,
+            )
+            return
+        if callback_event.status is JobStatus.DONE:
+            self.complete_export_success(
+                owner_id=job.owner_id,
+                export_id=export_id,
+                transition_job_status=False,
+                occurred_at=callback_event.occurred_at,
+                correlation_id=callback_event.correlation_id,
+            )
+            return
+        if callback_event.status in {JobStatus.EDITING, JobStatus.FAILED}:
+            self.complete_export_failure(
+                owner_id=job.owner_id,
+                export_id=export_id,
+                transition_job_status=False,
+                occurred_at=callback_event.occurred_at,
+                correlation_id=callback_event.correlation_id,
+            )
 
     @staticmethod
     def _merge_artifact_updates(
@@ -1962,6 +2561,39 @@ class InMemoryStore:
         signature_payload = payload.model_dump(mode="json", exclude_none=True)
         return json.dumps(signature_payload, sort_keys=True, separators=(",", ":"))
 
+    def _build_export_download_url(
+        self,
+        *,
+        owner_id: str,
+        export_id: str,
+        export_format: ExportFormat,
+        expires_at: datetime,
+    ) -> str:
+        expires_epoch = int(expires_at.timestamp())
+        extension = _EXPORT_FORMAT_TO_EXTENSION.get(export_format, ".bin")
+        filename = f"{export_id}{extension}"
+        signature = self._build_export_download_signature(
+            owner_id=owner_id,
+            export_id=export_id,
+            filename=filename,
+            expires_epoch=expires_epoch,
+        )
+        return (
+            f"{_EXPORT_DOWNLOAD_URL_SCHEME}://{self.export_download_url_host}/exports/{export_id}/{filename}"
+            f"?expires={expires_epoch}&sig={signature}"
+        )
+
+    def _build_export_download_signature(
+        self,
+        *,
+        owner_id: str,
+        export_id: str,
+        filename: str,
+        expires_epoch: int,
+    ) -> str:
+        payload = f"{owner_id}|{export_id}|{filename}|{expires_epoch}".encode("utf-8")
+        return hmac.new(self.export_download_signing_key, payload, hashlib.sha256).hexdigest()
+
     @staticmethod
     def _normalize_custom_upload_filename(filename: str) -> str:
         normalized = filename.strip().replace("\\", "/").split("/")[-1]
@@ -2183,6 +2815,73 @@ class InMemoryStore:
             confirmed_image_uri=record.confirmed_image_uri,
             confirmed_at=record.confirmed_at,
         )
+
+    @staticmethod
+    def _copy_export_record(record: ExportRecord) -> ExportRecord:
+        return ExportRecord(
+            export_id=record.export_id,
+            owner_id=record.owner_id,
+            job_id=record.job_id,
+            format=record.format,
+            status=record.status,
+            instruction_version_id=record.instruction_version_id,
+            identity_key=record.identity_key,
+            screenshot_set_hash=record.screenshot_set_hash,
+            provenance=record.provenance.model_copy(deep=True),
+            provenance_frozen_at=record.provenance_frozen_at,
+            last_audit_event=record.last_audit_event,
+            download_url=record.download_url,
+            download_url_expires_at=record.download_url_expires_at,
+            created_at=record.created_at,
+            updated_at=record.updated_at,
+        )
+
+    @staticmethod
+    def _copy_export_manifest_linkage_record(record: ExportManifestLinkageRecord) -> ExportManifestLinkageRecord:
+        return ExportManifestLinkageRecord(
+            export_id=record.export_id,
+            identity_key=record.identity_key,
+            linked_at=record.linked_at,
+        )
+
+    def _append_export_audit_record(
+        self,
+        *,
+        event_type: ExportAuditEventType,
+        export_record: ExportRecord,
+        occurred_at: datetime,
+        correlation_id: str | None,
+    ) -> None:
+        self.export_audit_events.append(
+            ExportAuditRecord(
+                event_type=event_type,
+                export_id=export_record.export_id,
+                identity_key=export_record.identity_key,
+                occurred_at=occurred_at,
+                recorded_at=datetime.now(UTC),
+                correlation_id=self._normalize_export_audit_correlation_id(correlation_id),
+            )
+        )
+        self.export_audit_write_count += 1
+
+    @staticmethod
+    def _normalize_export_audit_correlation_id(correlation_id: str | None) -> str:
+        if correlation_id is not None:
+            normalized = correlation_id.strip()
+            if normalized:
+                return normalized
+        return f"corr-export-{uuid4()}"
+
+    def _get_export_record_for_owner_mutable(
+        self,
+        *,
+        owner_id: str,
+        export_id: str,
+    ) -> ExportRecord | None:
+        record = self.exports_by_id.get(export_id)
+        if record is None or record.owner_id != owner_id:
+            return None
+        return record
 
     @staticmethod
     def _copy_instruction_record(record: InstructionRecord) -> InstructionRecord:

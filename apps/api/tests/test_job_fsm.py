@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import unittest
 
+from app.domain.export_fsm import ensure_export_transition
 from app.domain.job_fsm import ensure_transition
 from app.errors import ApiError
 from app.repositories.memory import InMemoryStore
-from app.schemas.job import JobStatus
+from app.schemas.job import ExportStatus, JobStatus
 
 
 class JobFsmUnitTests(unittest.TestCase):
@@ -24,6 +25,7 @@ class JobFsmUnitTests(unittest.TestCase):
             (JobStatus.GENERATING, JobStatus.GENERATING),
             (JobStatus.DRAFT_READY, JobStatus.EDITING),
             (JobStatus.EDITING, JobStatus.EXPORTING),
+            (JobStatus.EXPORTING, JobStatus.EDITING),
             (JobStatus.EXPORTING, JobStatus.DONE),
         ]
         for old_status, new_status in allowed_pairs:
@@ -99,6 +101,40 @@ class JobFsmUnitTests(unittest.TestCase):
         self.assertEqual(job.status, before_status)
         self.assertEqual(job.updated_at, before_updated_at)
         self.assertEqual(store.job_write_count, before_writes)
+
+
+class ExportFsmUnitTests(unittest.TestCase):
+    def test_allowed_export_transitions(self) -> None:
+        allowed_pairs = [
+            (ExportStatus.REQUESTED, ExportStatus.RUNNING),
+            (ExportStatus.RUNNING, ExportStatus.SUCCEEDED),
+            (ExportStatus.RUNNING, ExportStatus.FAILED),
+        ]
+        for old_status, new_status in allowed_pairs:
+            with self.subTest(old_status=old_status, new_status=new_status):
+                ensure_export_transition(old_status, new_status)
+
+    def test_forbidden_export_transition_returns_contract_shape(self) -> None:
+        with self.assertRaises(ApiError) as context:
+            ensure_export_transition(ExportStatus.REQUESTED, ExportStatus.SUCCEEDED)
+        self.assertEqual(context.exception.status_code, 409)
+        self.assertEqual(context.exception.payload.code, "EXPORT_TRANSITION_INVALID")
+        details = context.exception.payload.details
+        self.assertEqual(details["current_status"], ExportStatus.REQUESTED)
+        self.assertEqual(details["attempted_status"], ExportStatus.SUCCEEDED)
+        self.assertEqual(details["allowed_next_statuses"], [ExportStatus.RUNNING])
+
+    def test_export_terminal_states_are_immutable(self) -> None:
+        for terminal in (ExportStatus.SUCCEEDED, ExportStatus.FAILED):
+            with self.subTest(terminal=terminal):
+                with self.assertRaises(ApiError) as context:
+                    ensure_export_transition(terminal, ExportStatus.RUNNING)
+                self.assertEqual(context.exception.status_code, 409)
+                self.assertEqual(context.exception.payload.code, "EXPORT_TERMINAL_IMMUTABLE")
+                details = context.exception.payload.details
+                self.assertEqual(details["current_status"], terminal)
+                self.assertEqual(details["attempted_status"], ExportStatus.RUNNING)
+                self.assertEqual(details["allowed_next_statuses"], [])
 
 
 if __name__ == "__main__":

@@ -13,7 +13,15 @@ from app.core.config import get_settings
 from app.main import create_app
 from app.routes.dependencies import get_internal_callback_service
 from app.schemas.internal import StatusCallbackRequest
-from app.schemas.job import ArtifactManifest, JobStatus, TranscriptSegment
+from app.schemas.job import (
+    ArtifactManifest,
+    CreateExportRequest,
+    ExportAuditEventType,
+    ExportFormat,
+    ExportStatus,
+    JobStatus,
+    TranscriptSegment,
+)
 from app.services.jobs import JobService
 
 
@@ -434,6 +442,104 @@ class CallbackTransactionTests(_SettingsEnvCase):
         self.assertEqual(updated_job.failure_code, "TRANSCRIPT_TIMEOUT")
         self.assertEqual(updated_job.failure_message, "safe timeout")
         self.assertEqual(updated_job.failed_stage, "TRANSCRIBING")
+
+    def test_callback_export_lifecycle_mutates_export_and_job_deterministically(self) -> None:
+        app = create_app()
+        client = TestClient(app)
+        store = app.state.store
+        service = JobService(store)
+        project = store.create_project(owner_id="owner-1", name="Project")
+        job = service.create_job(owner_id="owner-1", project_id=project.id)
+        store.jobs[job.id].status = JobStatus.EDITING
+        store.create_instruction_version(
+            owner_id="owner-1",
+            instruction_id="inst-export-callback",
+            job_id=job.id,
+            version=1,
+            markdown="# Export",
+            model_profile_id="cloud-default",
+            prompt_template_id="prompt-template-v1",
+        )
+        created = service.create_export_request(
+            owner_id="owner-1",
+            job_id=job.id,
+            payload=CreateExportRequest(format=ExportFormat.PDF, instruction_version_id="1"),
+        )
+        export_id = created.export.id
+
+        start = client.post(
+            f"/api/v1/internal/jobs/{job.id}/status",
+            headers={"X-Callback-Secret": "test-callback-secret"},
+            json={
+                "event_id": "evt-export-start-1",
+                "status": "EXPORTING",
+                "occurred_at": "2026-03-04T10:00:00Z",
+                "artifact_updates": {"export_id": export_id},
+                "correlation_id": "corr-export-start-1",
+            },
+        )
+        self.assertEqual(start.status_code, 204)
+        self.assertEqual(store.jobs[job.id].status, JobStatus.EXPORTING)
+        self.assertEqual(store.exports_by_id[export_id].status, ExportStatus.RUNNING)
+        start_events = [event for event in store.export_audit_events if event.export_id == export_id]
+        self.assertEqual(
+            [event.event_type for event in start_events],
+            [
+                ExportAuditEventType.EXPORT_REQUESTED,
+                ExportAuditEventType.EXPORT_STARTED,
+            ],
+        )
+        self.assertEqual(start_events[-1].correlation_id, "corr-export-start-1")
+        self.assertEqual(start_events[-1].occurred_at, datetime.fromisoformat("2026-03-04T10:00:00+00:00"))
+
+        before_export_writes = store.export_write_count
+        done = client.post(
+            f"/api/v1/internal/jobs/{job.id}/status",
+            headers={"X-Callback-Secret": "test-callback-secret"},
+            json={
+                "event_id": "evt-export-done-1",
+                "status": "DONE",
+                "occurred_at": "2026-03-04T10:01:00Z",
+                "artifact_updates": {"export_id": export_id},
+                "correlation_id": "corr-export-done-1",
+            },
+        )
+        self.assertEqual(done.status_code, 204)
+        self.assertEqual(store.jobs[job.id].status, JobStatus.DONE)
+        self.assertEqual(store.exports_by_id[export_id].status, ExportStatus.SUCCEEDED)
+        self.assertIsNotNone(store.exports_by_id[export_id].provenance_frozen_at)
+        self.assertEqual(store.jobs[job.id].manifest.exports, [export_id])
+        self.assertEqual(len(store.export_linkages_by_job[job.id]), 1)
+        self.assertEqual(store.export_linkages_by_job[job.id][0].export_id, export_id)
+        self.assertEqual(store.export_linkages_by_job[job.id][0].identity_key, store.exports_by_id[export_id].identity_key)
+        done_events = [event for event in store.export_audit_events if event.export_id == export_id]
+        self.assertEqual(
+            [event.event_type for event in done_events],
+            [
+                ExportAuditEventType.EXPORT_REQUESTED,
+                ExportAuditEventType.EXPORT_STARTED,
+                ExportAuditEventType.EXPORT_SUCCEEDED,
+            ],
+        )
+        self.assertEqual(done_events[-1].correlation_id, "corr-export-done-1")
+        self.assertEqual(done_events[-1].occurred_at, datetime.fromisoformat("2026-03-04T10:01:00+00:00"))
+
+        done_replay = client.post(
+            f"/api/v1/internal/jobs/{job.id}/status",
+            headers={"X-Callback-Secret": "test-callback-secret"},
+            json={
+                "event_id": "evt-export-done-1",
+                "status": "DONE",
+                "occurred_at": "2026-03-04T10:01:00Z",
+                "artifact_updates": {"export_id": export_id},
+                "correlation_id": "corr-export-done-1",
+            },
+        )
+        self.assertEqual(done_replay.status_code, 200)
+        self.assertEqual(store.export_write_count, before_export_writes + 1)
+        self.assertEqual(len(store.export_linkages_by_job[job.id]), 1)
+        replay_events = [event for event in store.export_audit_events if event.export_id == export_id]
+        self.assertEqual(len(replay_events), 3)
 
 
 if __name__ == "__main__":

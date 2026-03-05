@@ -22,9 +22,11 @@ from app.schemas.job import (
     ConfirmCustomUploadRequest,
     ConfirmCustomUploadResponse,
     CreateCustomUploadRequest,
+    CreateExportRequest,
     ConfirmUploadRequest,
     ConfirmUploadResponse,
     CustomUploadTicket,
+    Export,
     Job,
     RetryJobRequest,
     RetryJobResponse,
@@ -128,6 +130,47 @@ async def run_job(
     run_result = service.run_job(owner_id=principal.user_id, job_id=job_id)
     response.status_code = status.HTTP_200_OK if run_result.replayed else status.HTTP_202_ACCEPTED
     return run_result
+
+
+@router.post(
+    "/jobs/{jobId}/exports",
+    response_model=Export,
+    response_model_exclude_none=True,
+    responses={
+        200: {"model": Export},
+        202: {"model": Export},
+        400: {"model": Error},
+        404: {"model": NoLeakNotFoundError},
+    },
+)
+async def create_export_request(
+    job_id: Annotated[str, Path(alias="jobId")],
+    payload: CreateExportRequest,
+    response: Response,
+    principal: Annotated[AuthPrincipal, Depends(get_authenticated_principal)],
+    service: Annotated[JobService, Depends(get_job_service)],
+) -> Export:
+    result = service.create_export_request(
+        owner_id=principal.user_id,
+        job_id=job_id,
+        payload=payload,
+    )
+    response.status_code = status.HTTP_200_OK if result.replayed else status.HTTP_202_ACCEPTED
+    return result.export
+
+
+@router.get(
+    "/exports/{exportId}",
+    response_model=Export,
+    response_model_exclude_none=True,
+    responses={404: {"model": NoLeakNotFoundError}},
+)
+async def get_export(
+    export_id: Annotated[str, Path(alias="exportId")],
+    principal: Annotated[AuthPrincipal, Depends(get_authenticated_principal)],
+    service: Annotated[JobService, Depends(get_job_service)],
+) -> Export:
+    return service.get_export(owner_id=principal.user_id, export_id=export_id)
 
 
 @router.post(

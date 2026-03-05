@@ -3,7 +3,7 @@
 from datetime import datetime
 from enum import Enum
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from app.schemas.instruction import CharRange
 
@@ -239,6 +239,81 @@ class AnnotateScreenshotResponse(BaseModel):
     ops_hash: str
     rendered_asset_id: str
     active_asset_id: str
+
+
+class ExportFormat(str, Enum):
+    PDF = "PDF"
+    MD_ZIP = "MD_ZIP"
+
+
+class ExportStatus(str, Enum):
+    REQUESTED = "REQUESTED"
+    RUNNING = "RUNNING"
+    SUCCEEDED = "SUCCEEDED"
+    FAILED = "FAILED"
+
+
+class ExportAuditEventType(str, Enum):
+    EXPORT_REQUESTED = "EXPORT_REQUESTED"
+    EXPORT_STARTED = "EXPORT_STARTED"
+    EXPORT_SUCCEEDED = "EXPORT_SUCCEEDED"
+    EXPORT_FAILED = "EXPORT_FAILED"
+
+
+class ExportAuditEvent(BaseModel):
+    event_type: ExportAuditEventType
+    export_id: str
+    identity_key: str
+    occurred_at: datetime
+    recorded_at: datetime
+    correlation_id: str
+
+
+class CreateExportRequest(BaseModel):
+    format: ExportFormat
+    instruction_version_id: str
+    idempotency_key: str | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_null_idempotency_key(cls, data: object) -> object:
+        if isinstance(data, dict) and "idempotency_key" in data and data["idempotency_key"] is None:
+            raise ValueError("idempotency_key must be a string when provided")
+        return data
+
+
+class ExportAnchorBinding(BaseModel):
+    anchor_id: str
+    active_asset_id: str
+    rendered_asset_id: str | None = None
+
+
+class ExportProvenance(BaseModel):
+    instruction_version_id: str
+    screenshot_set_hash: str
+    anchors: list[ExportAnchorBinding]
+    instruction_snapshot_id: str
+    model_profile_id: str
+    prompt_template_id: str
+    prompt_params_ref: str | None = None
+    generated_at: datetime | None = None
+
+
+class Export(BaseModel):
+    id: str
+    job_id: str
+    format: ExportFormat
+    status: ExportStatus
+    instruction_version_id: str
+    identity_key: str
+    screenshot_set_hash: str
+    provenance: ExportProvenance | None = None
+    provenance_frozen_at: datetime | None = None
+    last_audit_event: ExportAuditEventType | None = None
+    download_url: str | None = None
+    download_url_expires_at: datetime | None = None
+    created_at: datetime
+    updated_at: datetime
 
 
 class SoftDeleteScreenshotAssetResponse(BaseModel):

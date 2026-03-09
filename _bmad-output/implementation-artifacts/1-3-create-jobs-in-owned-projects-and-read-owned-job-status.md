@@ -1,6 +1,6 @@
 # Story 1.3: Create Jobs in Owned Projects and Read Owned Job Status
 
-Status: ready-for-dev
+Status: done
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 
@@ -17,21 +17,27 @@ so that I can manage processing safely within my workspace.
 
 ## Tasks / Subtasks
 
-- [ ] Implement owner-scoped job creation and read boundaries in service/repository layers (AC: 1, 2)
-- [ ] Ensure `POST /projects/{projectId}/jobs` verifies project ownership via service/repository logic (no route-level business logic).
-- [ ] Ensure created job persists `owner_id` from authenticated principal and starts with status `CREATED`.
-- [ ] Add owner-scoped repository method for job lookup by `job_id` that returns `None` for cross-owner/nonexistent access.
-- [ ] Implement owned job status endpoint with no-leak behavior (AC: 2)
-- [ ] Add `GET /jobs/{jobId}` route protected by bearer auth and wired through job service.
-- [ ] Ensure cross-owner and nonexistent job lookups both return identical `404 RESOURCE_NOT_FOUND` payload shape.
-- [ ] Keep route handlers thin and delegate ownership checks to service/repository layer.
-- [ ] Keep OpenAPI runtime contract alignment for implemented job endpoints (AC: 1, 2)
-- [ ] Ensure `/openapi.json` includes `POST /projects/{projectId}/jobs` and `GET /jobs/{jobId}` with contract-compatible status sets.
-- [ ] Ensure response schemas stay aligned with `Job` and no-leak not-found contract schema usage.
-- [ ] Add tests for job ownership boundaries and status retrieval no-leak semantics (AC: 1, 2)
-- [ ] Add API tests for create-job success under owned project and initial `CREATED` status.
-- [ ] Add API tests for `GET /jobs/{jobId}` owned access success and cross-owner/nonexistent parity (`404 RESOURCE_NOT_FOUND`).
-- [ ] Add unit tests for job service/repository owner-scoped create/get behavior.
+- [x] Implement owner-scoped job creation and read boundaries in service/repository layers (AC: 1, 2)
+- [x] Ensure `POST /projects/{projectId}/jobs` verifies project ownership via service/repository logic (no route-level business logic).
+- [x] Ensure created job persists `owner_id` from authenticated principal and starts with status `CREATED`.
+- [x] Add owner-scoped repository method for job lookup by `job_id` that returns `None` for cross-owner/nonexistent access.
+- [x] Implement owned job status endpoint with no-leak behavior (AC: 2)
+- [x] Add `GET /jobs/{jobId}` route protected by bearer auth and wired through job service.
+- [x] Ensure cross-owner and nonexistent job lookups both return identical `404 RESOURCE_NOT_FOUND` payload shape.
+- [x] Keep route handlers thin and delegate ownership checks to service/repository layer.
+- [x] Keep OpenAPI runtime contract alignment for implemented job endpoints (AC: 1, 2)
+- [x] Ensure `/openapi.json` includes `POST /projects/{projectId}/jobs` and `GET /jobs/{jobId}` with contract-compatible status sets.
+- [x] Ensure response schemas stay aligned with `Job` and no-leak not-found contract schema usage.
+- [x] Add tests for job ownership boundaries and status retrieval no-leak semantics (AC: 1, 2)
+- [x] Add API tests for create-job success under owned project and initial `CREATED` status.
+- [x] Add API tests for `GET /jobs/{jobId}` owned access success and cross-owner/nonexistent parity (`404 RESOURCE_NOT_FOUND`).
+- [x] Add unit tests for job service/repository owner-scoped create/get behavior.
+
+### Review Follow-ups (AI)
+
+- [x] [AI-Review][HIGH] Remove undocumented `401` from `/api/v1/projects/{projectId}/jobs` OpenAPI response filtering to match `spec/api/openapi.yaml` contract (`201`, `404` only). [apps/api/app/main.py:20]
+- [x] [AI-Review][MEDIUM] Update OpenAPI contract test expectations for `POST /projects/{projectId}/jobs` to match spec status set (`201`, `404`) and prevent future response-code drift. [apps/api/tests/test_auth_middleware.py:77]
+- [x] [AI-Review][MEDIUM] Strengthen unit no-leak assertion for unauthorized `get_job` path by validating `ApiError` status/code payload (`404`, `RESOURCE_NOT_FOUND`) rather than exception type only. [apps/api/tests/test_jobs_ownership.py:110]
 
 ## Dev Notes
 
@@ -127,9 +133,60 @@ GPT-5.3-Codex
 
 ### Completion Notes List
 
-- Ultimate context engine analysis completed - comprehensive developer guide created.
-- Story scope constrained to owned job creation and owned job status retrieval, with no-leak and contract-alignment guardrails emphasized.
+- Implemented owner-scoped job retrieval in repository and service layers (`get_job_for_owner`, `JobService.get_job`) and strengthened owner-scoped project check for job creation via `get_project_for_owner`.
+- Added `GET /api/v1/jobs/{jobId}` endpoint with bearer-auth protection and no-leak `404 RESOURCE_NOT_FOUND` behavior for cross-owner and nonexistent access.
+- Kept route handlers thin by delegating ownership checks to service/repository.
+- Aligned route-level `404` schema usage for `POST /projects/{projectId}/jobs` to `NoLeakNotFoundError`.
+- Updated OpenAPI runtime response filtering and assertions to include `/api/v1/jobs/{jobId}` with contract-compatible response statuses and no-leak schema reference.
+- Added API and unit tests for create/get job ownership boundaries and no-leak behavior parity.
+- Verification completed in `apps/api`: `make check` passed on 2026-02-23.
+- Resolved code-review follow-ups: aligned `POST /projects/{projectId}/jobs` runtime OpenAPI response set with contract (`201`, `404`), updated OpenAPI test expectations, and tightened no-leak unit assertions for unauthorized job reads.
 
 ### File List
 
+- `apps/api/app/main.py`
+- `apps/api/app/repositories/memory.py`
+- `apps/api/app/routes/jobs.py`
+- `apps/api/app/services/jobs.py`
+- `apps/api/tests/test_auth_middleware.py`
+- `apps/api/tests/test_jobs_ownership.py`
 - `_bmad-output/implementation-artifacts/1-3-create-jobs-in-owned-projects-and-read-owned-job-status.md`
+- `_bmad-output/implementation-artifacts/sprint-status.yaml`
+
+### Change Log
+
+- 2026-02-23: Completed Story 1.3 implementation for owned job creation/read boundaries, no-leak status retrieval behavior, and contract-aligned OpenAPI/test coverage; story moved to `review`.
+- 2026-02-23: Senior code review completed with Changes Requested; review follow-up items added and story moved to `in-progress`.
+- 2026-02-23: Applied all HIGH/MEDIUM review fixes, re-validated with `make check`, and moved story to `done`.
+
+## Senior Developer Review (AI)
+
+### Reviewer
+
+- `Codex` (AI Senior Developer Reviewer)
+- Date: 2026-02-23
+
+### Outcome
+
+- Approved
+
+### Summary
+
+- Core ownership and no-leak behavior is implemented, but OpenAPI contract parity still drifts on the job-create response set.
+- Test coverage exists for major flows, though one no-leak unit assertion is too weak to reliably guard error-shape regressions.
+
+### Severity Breakdown
+
+- High: 1
+- Medium: 2
+- Low: 0
+
+### Action Items
+
+- [x] [HIGH] Remove undocumented `401` from runtime OpenAPI filtering for `POST /projects/{projectId}/jobs` to match spec response set. [apps/api/app/main.py:20]
+- [x] [MEDIUM] Align OpenAPI response-code test assertion for `POST /projects/{projectId}/jobs` with spec (`201`, `404`). [apps/api/tests/test_auth_middleware.py:77]
+- [x] [MEDIUM] Strengthen unit test to assert no-leak error payload details (`404` + `RESOURCE_NOT_FOUND`) for unauthorized `get_job` access. [apps/api/tests/test_jobs_ownership.py:110]
+
+### Follow-up Resolution
+
+- 2026-02-23: All HIGH/MEDIUM review action items resolved and re-validated with `make check`; story approved.

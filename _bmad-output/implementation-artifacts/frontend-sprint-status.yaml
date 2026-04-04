@@ -1,0 +1,60 @@
+# generated: 2026-03-24
+# project: Howera Frontend Phase
+# project_key: NOKEY
+# tracking_system: file-system
+# story_location: _bmad-output/implementation-artifacts
+#
+# STATUS DEFINITIONS:
+# ==================
+# Epic Status:
+#   - backlog: Epic not yet started
+#   - in-progress: Epic actively being worked on
+#   - done: All stories in epic completed
+#
+# Story Status:
+#   - backlog: Story only exists in epic file
+#   - ready-for-dev: Story file created in stories folder
+#   - in-progress: Developer actively working on implementation
+#   - review: Ready for code review
+#   - done: Story completed
+#
+# NOTE:
+# =====
+# This tracker is phase-specific for frontend work and does not replace the canonical
+# backend `sprint-status.yaml`. Use it when starting the frontend BMAD cycle.
+
+generated: 2026-04-04
+project: Howera Frontend Phase
+project_key: NOKEY
+tracking_system: file-system
+story_location: _bmad-output/implementation-artifacts
+
+development_status:
+  epic-7: done
+  7-1-bootstrap-apps-web-and-workspace-shell: done
+  7-2-restore-firebase-session-and-protect-workspace-routes: done
+  7-3-create-and-browse-owned-projects-and-jobs: done
+  7-4-confirm-upload-and-surface-lifecycle-actions: done
+  epic-7-retrospective: optional
+  epic-8: done
+  8-1-edit-instruction-with-version-safe-save: done
+  8-2-add-transcript-context-panel: done
+  8-3-request-targeted-regenerate-and-poll-task-status: done
+  8-4-surface-validation-status-and-validation-errors: done
+  epic-8-retrospective: optional
+  epic-9: done
+  9-1-request-screenshot-extraction-and-poll-task: done
+  9-2-inspect-anchor-context-and-version-visibility: done
+  9-3-manage-screenshot-asset-lifecycle: done
+  9-4-annotate-screenshot-assets: done
+  epic-9-retrospective: optional
+  epic-10: done
+  10-1-request-exports-and-track-export-status: done
+  10-2-download-completed-exports-securely: done
+  epic-10-retrospective: optional
+  epic-11: done
+  11-1-implement-unified-error-retry-and-polling-pattern: done
+  11-2-achieve-accessibility-and-responsive-baseline: done
+  11-3-add-frontend-test-automation-and-bmad-quality-gates: done
+  11-4-prepare-deployment-config-and-safe-telemetry: done
+  epic-11-retrospective: optional

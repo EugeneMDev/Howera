@@ -183,6 +183,11 @@ Expected:
 Create a single test entrypoint:
 - `tests/e2e/test_golden_path.py`
 
+Frontend verification entrypoint:
+- `apps/web/tests/integration/frontend-golden-path.test.ts`
+- Run with `cd apps/web && npm run test:golden-path`
+- The suite stays in mock mode, exercises create/run/edit/screenshot/export against the real frontend API wrappers, and labels failures with the exact broken step.
+
 Modes:
 - default mock mode (no external calls)
 - integration mode (requires Firebase/OpenAI)

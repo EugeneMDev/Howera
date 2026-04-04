@@ -1,0 +1,9 @@
+Metadata-Version: 2.4
+Name: howera-api
+Version: 0.1.0
+Summary: Howera FastAPI backend
+Requires-Python: >=3.12
+Requires-Dist: firebase-admin>=6.7.0
+Requires-Dist: fastapi>=0.116.0
+Requires-Dist: pydantic>=2.8.0
+Requires-Dist: pydantic-settings>=2.3.0

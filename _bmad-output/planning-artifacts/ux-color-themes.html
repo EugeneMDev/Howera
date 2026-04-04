@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Howera UX Color Themes</title>
+  <style>
+    :root {
+      --bg: #f5f7fb;
+      --text: #101828;
+      --muted: #475467;
+      --card: #ffffff;
+      --line: #d0d5dd;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "IBM Plex Sans", "Segoe UI", Arial, sans-serif;
+      background: linear-gradient(160deg, #f9fafb, #eef2ff);
+      color: var(--text);
+    }
+    .wrap {
+      max-width: 1100px;
+      margin: 0 auto;
+      padding: 24px;
+    }
+    h1 {
+      margin: 0 0 8px;
+      font-family: "Space Grotesk", "Segoe UI", Arial, sans-serif;
+      font-size: 32px;
+      letter-spacing: -0.02em;
+    }
+    p { margin: 0 0 20px; color: var(--muted); }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      gap: 16px;
+    }
+    .theme {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      overflow: hidden;
+      box-shadow: 0 12px 28px rgba(16, 24, 40, 0.06);
+    }
+    .theme h2 {
+      margin: 0;
+      padding: 12px 14px;
+      font-size: 16px;
+      border-bottom: 1px solid var(--line);
+    }
+    .swatches {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+      padding: 12px;
+    }
+    .swatch {
+      border-radius: 10px;
+      padding: 10px;
+      min-height: 68px;
+      color: #fff;
+      font-size: 12px;
+      display: flex;
+      flex-direction: column;
+      justify-content: flex-end;
+    }
+    .mono {
+      font-family: "IBM Plex Mono", Menlo, monospace;
+      font-size: 11px;
+      opacity: 0.9;
+    }
+    .footer {
+      margin-top: 18px;
+      font-size: 12px;
+      color: #344054;
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>Howera Color Directions</h1>
+    <p>Three palette candidates for the frontend phase. Direction B is the selected baseline.</p>
+
+    <div class="grid">
+      <section class="theme">
+        <h2>Direction A: Operational Slate</h2>
+        <div class="swatches">
+          <div class="swatch" style="background:#1D2939">Primary <span class="mono">#1D2939</span></div>
+          <div class="swatch" style="background:#344054">Secondary <span class="mono">#344054</span></div>
+          <div class="swatch" style="background:#1570EF">Info <span class="mono">#1570EF</span></div>
+          <div class="swatch" style="background:#12B76A">Success <span class="mono">#12B76A</span></div>
+          <div class="swatch" style="background:#F79009">Warning <span class="mono">#F79009</span></div>
+          <div class="swatch" style="background:#D92D20">Error <span class="mono">#D92D20</span></div>
+        </div>
+      </section>
+
+      <section class="theme">
+        <h2>Direction B: Editorial Studio (Selected)</h2>
+        <div class="swatches">
+          <div class="swatch" style="background:#1849A9">Primary <span class="mono">#1849A9</span></div>
+          <div class="swatch" style="background:#026AA2">Secondary <span class="mono">#026AA2</span></div>
+          <div class="swatch" style="background:#4E5BA6">Accent <span class="mono">#4E5BA6</span></div>
+          <div class="swatch" style="background:#067647">Success <span class="mono">#067647</span></div>
+          <div class="swatch" style="background:#B54708">Warning <span class="mono">#B54708</span></div>
+          <div class="swatch" style="background:#B42318">Error <span class="mono">#B42318</span></div>
+        </div>
+      </section>
+
+      <section class="theme">
+        <h2>Direction C: Calm Graphite</h2>
+        <div class="swatches">
+          <div class="swatch" style="background:#222F3E">Primary <span class="mono">#222F3E</span></div>
+          <div class="swatch" style="background:#3A4756">Secondary <span class="mono">#3A4756</span></div>
+          <div class="swatch" style="background:#0E9384">Accent <span class="mono">#0E9384</span></div>
+          <div class="swatch" style="background:#079455">Success <span class="mono">#079455</span></div>
+          <div class="swatch" style="background:#DC6803">Warning <span class="mono">#DC6803</span></div>
+          <div class="swatch" style="background:#D92D20">Error <span class="mono">#D92D20</span></div>
+        </div>
+      </section>
+    </div>
+
+    <div class="footer">Howera BMAD UX workflow artifact. Use this as visual reference for token setup in frontend implementation.</div>
+  </div>
+</body>
+</html>

@@ -1,0 +1,61 @@
+name: Frontend Quality
+
+on:
+  pull_request:
+    paths:
+      - "apps/web/**"
+      - "docs/dev-setup.md"
+      - "docs/golden-path.md"
+      - ".github/workflows/frontend-quality.yml"
+  push:
+    branches:
+      - main
+      - master
+    paths:
+      - "apps/web/**"
+      - "docs/dev-setup.md"
+      - "docs/golden-path.md"
+      - ".github/workflows/frontend-quality.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  frontend-quality:
+    runs-on: ubuntu-latest
+    env:
+      CI: "true"
+      NEXT_PUBLIC_API_BASE_URL: "http://localhost:8000/api/v1"
+      NEXT_PUBLIC_AUTH_PROVIDER: "mock"
+      NEXT_PUBLIC_MOCK_USER_ID: "ci-editor"
+    defaults:
+      run:
+        working-directory: apps/web
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+          node-version: "22.11.0"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint frontend
+        run: make lint
+
+      - name: Run unit tests
+        run: npm run test:unit
+
+      - name: Run mock-mode golden path
+        run: npm run test:golden-path
+
+      - name: Typecheck frontend
+        run: npm run typecheck
+
+      - name: Build frontend
+        run: npm run build

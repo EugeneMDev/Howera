@@ -44,7 +44,7 @@ Required directories/files (minimum):
 - `apps/api` (FastAPI backend)
 - `spec/` (read-only contracts)
 - `.env.example`
-- `docs/env.md`
+- `env.md`
 
 ---
 
@@ -74,7 +74,7 @@ n8n:
 ffmpeg:
 - `FFMPEG_PATH`
 
-See details: `docs/env.md`.
+See details: `env.md`.
 
 Do not commit `.env`.
 
@@ -168,6 +168,23 @@ Minimum expectation:
 - API running
 - n8n running
 - `.env` configured (or mocks enabled)
+
+### Frontend Verification (BMAD)
+
+Frontend story work is not done until the `apps/web` verification commands pass.
+
+```bash
+cd apps/web
+make lint
+make test
+make check
+```
+
+Notes:
+- `make test` runs both the unit suite and the mock-mode golden path.
+- CI runs the same frontend quality gates on pull requests with `NEXT_PUBLIC_AUTH_PROVIDER=mock`.
+- Public frontend deployment/runtime values live in `apps/web/.env.example`, including `NEXT_PUBLIC_APP_ENV`, `NEXT_PUBLIC_HOSTING_TARGET`, and `NEXT_PUBLIC_TELEMETRY_ENABLED`.
+- Before marking a frontend BMAD story complete, record which of these commands passed.
 
 ---
 

@@ -22,6 +22,32 @@ Production secrets must NEVER be committed.
 | HOST | Yes | All | Server bind address |
 | PORT | Yes | All | API port |
 
+## Frontend Public Runtime (`apps/web`)
+
+These values are read by the Next.js frontend at build/runtime and must stay environment-driven.
+
+| Variable | Required | Phase | Description |
+|----------|----------|-------|------------|
+| NEXT_PUBLIC_API_BASE_URL | Yes | Frontend | Base URL for the FastAPI public API |
+| NEXT_PUBLIC_APP_ENV | Recommended | Frontend | deployment environment label shown in the workspace shell |
+| NEXT_PUBLIC_AUTH_PROVIDER | Recommended | Frontend | `firebase` or `mock` |
+| NEXT_PUBLIC_HOSTING_TARGET | Recommended | Frontend | hosting target label for Firebase Hosting rollout |
+| NEXT_PUBLIC_MOCK_USER_ID | Mock only | Frontend | local mock editor identity |
+| NEXT_PUBLIC_TELEMETRY_ENABLED | Optional | Frontend | enables sanitized browser telemetry emission |
+
+Client Firebase config in the frontend must also be provided through:
+- `NEXT_PUBLIC_FIREBASE_API_KEY`
+- `NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN`
+- `NEXT_PUBLIC_FIREBASE_PROJECT_ID`
+- `NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET`
+- `NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID`
+- `NEXT_PUBLIC_FIREBASE_APP_ID`
+- `NEXT_PUBLIC_FIREBASE_MEASUREMENT_ID` (optional)
+
+Rules:
+- These `NEXT_PUBLIC_*` Firebase values are public client config, not secrets, but they must still match the deployed Firebase project.
+- Frontend telemetry must never include bearer tokens, signed URLs, raw transcript content, or markdown bodies.
+
 ---
 
 # 2. Authentication

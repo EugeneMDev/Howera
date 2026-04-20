@@ -1,0 +1,49 @@
+:root {
+  color-scheme: light;
+
+  --surface-canvas: #f5efe4;
+  --surface-panel: rgba(255, 251, 245, 0.88);
+  --surface-panel-strong: rgba(255, 248, 239, 0.96);
+  --surface-panel-muted: rgba(250, 241, 231, 0.88);
+
+  --text-primary: #1f201c;
+  --text-secondary: #45433e;
+  --text-muted: #6d695f;
+  --text-inverse: #fffaf4;
+
+  --line-subtle: rgba(84, 70, 49, 0.15);
+  --line-strong: rgba(84, 70, 49, 0.28);
+
+  --brand-primary: #c56231;
+  --brand-primary-strong: #8e3f1a;
+  --brand-soft: rgba(197, 98, 49, 0.12);
+
+  --status-success: #1e6f5c;
+  --status-success-soft: rgba(30, 111, 92, 0.12);
+  --status-info: #1f5f7a;
+  --status-info-soft: rgba(31, 95, 122, 0.12);
+  --status-warning: #8d5b11;
+  --status-warning-soft: rgba(141, 91, 17, 0.14);
+  --status-danger: #8a2f2b;
+  --status-danger-soft: rgba(138, 47, 43, 0.12);
+
+  --font-display: "Space Grotesk", "Avenir Next", "Segoe UI", sans-serif;
+  --font-body: "IBM Plex Sans", "Aptos", "Segoe UI", sans-serif;
+  --font-mono: "IBM Plex Mono", "SFMono-Regular", "Menlo", monospace;
+
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-5: 1.25rem;
+  --space-6: 1.5rem;
+  --space-8: 2rem;
+  --space-10: 2.5rem;
+
+  --radius-pill: 999px;
+  --radius-card: 1rem;
+  --radius-panel: 1.5rem;
+
+  --shadow-panel: 0 22px 50px rgba(68, 42, 17, 0.08);
+  --shadow-focus: 0 0 0 3px rgba(197, 98, 49, 0.24);
+}

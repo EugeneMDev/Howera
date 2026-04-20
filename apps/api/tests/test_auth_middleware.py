@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 import os
+import re
 import sys
 import types
 import unittest
@@ -18,6 +19,7 @@ from app.adapters.auth.mock_auth import MockTokenVerifier
 from app.core.config import Settings, get_settings
 from app.main import create_app
 from app.routes.dependencies import get_project_service, get_token_verifier
+from app.schemas.job import ExportStatus, JobStatus
 from app.schemas.project import Project
 
 
@@ -67,6 +69,26 @@ class AuthApiTests(_SettingsEnvCase):
         self.assertIn("/api/v1/projects", paths)
         self.assertIn("/api/v1/projects/{projectId}", paths)
         self.assertIn("/api/v1/projects/{projectId}/jobs", paths)
+        self.assertIn("/api/v1/jobs/{jobId}", paths)
+        self.assertIn("/api/v1/jobs/{jobId}/transcript", paths)
+        self.assertIn("/api/v1/jobs/{jobId}/confirm-upload", paths)
+        self.assertIn("/api/v1/jobs/{jobId}/run", paths)
+        self.assertIn("/api/v1/jobs/{jobId}/exports", paths)
+        self.assertIn("/api/v1/exports/{exportId}", paths)
+        self.assertIn("/api/v1/jobs/{jobId}/retry", paths)
+        self.assertIn("/api/v1/jobs/{jobId}/cancel", paths)
+        self.assertIn("/api/v1/jobs/{jobId}/screenshots/extract", paths)
+        self.assertIn("/api/v1/jobs/{jobId}/screenshots/uploads", paths)
+        self.assertIn("/api/v1/jobs/{jobId}/screenshots/uploads/{uploadId}/confirm", paths)
+        self.assertIn("/api/v1/instructions/{instructionId}/anchors", paths)
+        self.assertIn("/api/v1/anchors/{anchorId}", paths)
+        self.assertIn("/api/v1/anchors/{anchorId}/attach-upload", paths)
+        self.assertIn("/api/v1/anchors/{anchorId}/replace", paths)
+        self.assertIn("/api/v1/anchors/{anchorId}/assets/{assetId}", paths)
+        self.assertIn("/api/v1/screenshot-tasks/{taskId}", paths)
+        self.assertIn("/api/v1/instructions/{instructionId}", paths)
+        self.assertIn("/api/v1/instructions/{instructionId}/regenerate", paths)
+        self.assertIn("/api/v1/tasks/{taskId}", paths)
         self.assertIn("/api/v1/internal/jobs/{jobId}/status", paths)
 
         self.assertEqual(set(paths["/api/v1/projects"]["post"]["responses"].keys()), {"201", "401"})
@@ -74,15 +96,773 @@ class AuthApiTests(_SettingsEnvCase):
         self.assertEqual(set(paths["/api/v1/projects/{projectId}"]["get"]["responses"].keys()), {"200", "404"})
         self.assertEqual(
             set(paths["/api/v1/projects/{projectId}/jobs"]["post"]["responses"].keys()),
-            {"201", "401", "404"},
+            {"201", "404"},
         )
+        self.assertEqual(set(paths["/api/v1/jobs/{jobId}"]["get"]["responses"].keys()), {"200", "404"})
+        self.assertEqual(
+            set(paths["/api/v1/jobs/{jobId}/transcript"]["get"]["responses"].keys()),
+            {"200", "404", "409"},
+        )
+        self.assertEqual(
+            set(paths["/api/v1/jobs/{jobId}/confirm-upload"]["post"]["responses"].keys()),
+            {"200", "404", "409"},
+        )
+        self.assertEqual(
+            set(paths["/api/v1/jobs/{jobId}/run"]["post"]["responses"].keys()),
+            {"200", "202", "404", "409", "502"},
+        )
+        self.assertEqual(
+            set(paths["/api/v1/jobs/{jobId}/exports"]["post"]["responses"].keys()),
+            {"200", "202", "400", "404"},
+        )
+        self.assertEqual(
+            set(paths["/api/v1/exports/{exportId}"]["get"]["responses"].keys()),
+            {"200", "404"},
+        )
+        self.assertEqual(
+            set(paths["/api/v1/jobs/{jobId}/retry"]["post"]["responses"].keys()),
+            {"200", "202", "404", "409", "502"},
+        )
+        self.assertEqual(
+            set(paths["/api/v1/jobs/{jobId}/cancel"]["post"]["responses"].keys()),
+            {"200", "404", "409"},
+        )
+        self.assertEqual(
+            set(paths["/api/v1/jobs/{jobId}/screenshots/extract"]["post"]["responses"].keys()),
+            {"200", "202", "400", "404"},
+        )
+        self.assertEqual(
+            set(paths["/api/v1/jobs/{jobId}/screenshots/uploads"]["post"]["responses"].keys()),
+            {"201", "404"},
+        )
+        self.assertEqual(
+            set(paths["/api/v1/jobs/{jobId}/screenshots/uploads/{uploadId}/confirm"]["post"]["responses"].keys()),
+            {"200", "404"},
+        )
+        self.assertEqual(
+            set(paths["/api/v1/instructions/{instructionId}/anchors"]["post"]["responses"].keys()),
+            {"201", "404"},
+        )
+        self.assertEqual(
+            set(paths["/api/v1/instructions/{instructionId}/anchors"]["get"]["responses"].keys()),
+            {"200", "404"},
+        )
+        self.assertEqual(
+            set(paths["/api/v1/anchors/{anchorId}"]["get"]["responses"].keys()),
+            {"200", "404"},
+        )
+        self.assertEqual(
+            set(paths["/api/v1/anchors/{anchorId}/attach-upload"]["post"]["responses"].keys()),
+            {"200", "404"},
+        )
+        self.assertEqual(
+            set(paths["/api/v1/anchors/{anchorId}/annotations"]["post"]["responses"].keys()),
+            {"200", "400", "404"},
+        )
+        self.assertEqual(
+            set(paths["/api/v1/anchors/{anchorId}/replace"]["post"]["responses"].keys()),
+            {"200", "202", "400", "404"},
+        )
+        self.assertEqual(
+            set(paths["/api/v1/anchors/{anchorId}/assets/{assetId}"]["delete"]["responses"].keys()),
+            {"200", "404"},
+        )
+        self.assertEqual(
+            set(paths["/api/v1/screenshot-tasks/{taskId}"]["get"]["responses"].keys()),
+            {"200", "404"},
+        )
+        self.assertEqual(
+            set(paths["/api/v1/instructions/{instructionId}"]["get"]["responses"].keys()),
+            {"200", "404"},
+        )
+        self.assertEqual(
+            set(paths["/api/v1/instructions/{instructionId}"]["put"]["responses"].keys()),
+            {"200", "404", "409"},
+        )
+        self.assertEqual(
+            set(paths["/api/v1/instructions/{instructionId}/regenerate"]["post"]["responses"].keys()),
+            {"200", "202", "400", "404", "409"},
+        )
+        self.assertEqual(
+            set(paths["/api/v1/tasks/{taskId}"]["get"]["responses"].keys()),
+            {"200", "404"},
+        )
+        self.assertEqual(
+            paths["/api/v1/jobs/{jobId}"]["get"]["responses"]["404"]["content"]["application/json"]["schema"]["$ref"],
+            "#/components/schemas/NoLeakNotFoundError",
+        )
+        self.assertEqual(
+            paths["/api/v1/jobs/{jobId}/transcript"]["get"]["responses"]["200"]["content"]["application/json"]["schema"][
+                "$ref"
+            ],
+            "#/components/schemas/TranscriptPage",
+        )
+        self.assertEqual(
+            paths["/api/v1/jobs/{jobId}/transcript"]["get"]["responses"]["404"]["content"]["application/json"]["schema"][
+                "$ref"
+            ],
+            "#/components/schemas/NoLeakNotFoundError",
+        )
+        self.assertEqual(
+            paths["/api/v1/jobs/{jobId}/transcript"]["get"]["responses"]["409"]["content"]["application/json"]["schema"][
+                "$ref"
+            ],
+            "#/components/schemas/Error",
+        )
+        transcript_parameters = paths["/api/v1/jobs/{jobId}/transcript"]["get"]["parameters"]
+        limit_parameter = next(item for item in transcript_parameters if item["name"] == "limit")
+        self.assertEqual(limit_parameter["schema"]["default"], 200)
+        self.assertEqual(limit_parameter["schema"]["minimum"], 1)
+        self.assertEqual(limit_parameter["schema"]["maximum"], 500)
+        cursor_parameter = next(item for item in transcript_parameters if item["name"] == "cursor")
+        self.assertEqual(cursor_parameter["schema"]["type"], "string")
+        self.assertEqual(
+            paths["/api/v1/jobs/{jobId}/confirm-upload"]["post"]["responses"]["409"]["content"]["application/json"]["schema"]["oneOf"],
+            [
+                {"$ref": "#/components/schemas/FsmTransitionError"},
+                {"$ref": "#/components/schemas/VideoUriConflictError"},
+            ],
+        )
+        self.assertEqual(
+            paths["/api/v1/jobs/{jobId}/run"]["post"]["responses"]["409"]["content"]["application/json"]["schema"]["$ref"],
+            "#/components/schemas/FsmTransitionError",
+        )
+        self.assertEqual(
+            paths["/api/v1/jobs/{jobId}/run"]["post"]["responses"]["502"]["content"]["application/json"]["schema"]["$ref"],
+            "#/components/schemas/UpstreamDispatchError",
+        )
+        self.assertEqual(
+            paths["/api/v1/jobs/{jobId}/exports"]["post"]["requestBody"]["content"]["application/json"]["schema"]["$ref"],
+            "#/components/schemas/CreateExportRequest",
+        )
+        self.assertEqual(
+            paths["/api/v1/jobs/{jobId}/exports"]["post"]["responses"]["200"]["content"]["application/json"]["schema"]["$ref"],
+            "#/components/schemas/Export",
+        )
+        self.assertEqual(
+            paths["/api/v1/jobs/{jobId}/exports"]["post"]["responses"]["202"]["content"]["application/json"]["schema"]["$ref"],
+            "#/components/schemas/Export",
+        )
+        self.assertEqual(
+            paths["/api/v1/jobs/{jobId}/exports"]["post"]["responses"]["400"]["content"]["application/json"]["schema"]["$ref"],
+            "#/components/schemas/Error",
+        )
+        self.assertEqual(
+            paths["/api/v1/jobs/{jobId}/exports"]["post"]["responses"]["404"]["content"]["application/json"]["schema"]["$ref"],
+            "#/components/schemas/NoLeakNotFoundError",
+        )
+        self.assertEqual(
+            paths["/api/v1/exports/{exportId}"]["get"]["responses"]["200"]["content"]["application/json"]["schema"]["$ref"],
+            "#/components/schemas/Export",
+        )
+        self.assertEqual(
+            paths["/api/v1/exports/{exportId}"]["get"]["responses"]["404"]["content"]["application/json"]["schema"]["$ref"],
+            "#/components/schemas/NoLeakNotFoundError",
+        )
+        self.assertEqual(
+            paths["/api/v1/jobs/{jobId}/retry"]["post"]["responses"]["409"]["content"]["application/json"]["schema"]["$ref"],
+            "#/components/schemas/RetryStateConflictError",
+        )
+        self.assertEqual(
+            paths["/api/v1/jobs/{jobId}/retry"]["post"]["responses"]["502"]["content"]["application/json"]["schema"]["$ref"],
+            "#/components/schemas/UpstreamDispatchError",
+        )
+        self.assertEqual(
+            paths["/api/v1/jobs/{jobId}/cancel"]["post"]["responses"]["409"]["content"]["application/json"]["schema"]["$ref"],
+            "#/components/schemas/FsmTransitionError",
+        )
+        self.assertEqual(
+            paths["/api/v1/jobs/{jobId}/screenshots/extract"]["post"]["requestBody"]["content"]["application/json"][
+                "schema"
+            ]["$ref"],
+            "#/components/schemas/ScreenshotExtractionRequest",
+        )
+        self.assertEqual(
+            paths["/api/v1/jobs/{jobId}/screenshots/extract"]["post"]["responses"]["200"]["content"][
+                "application/json"
+            ]["schema"]["$ref"],
+            "#/components/schemas/ScreenshotTask",
+        )
+        self.assertEqual(
+            paths["/api/v1/jobs/{jobId}/screenshots/extract"]["post"]["responses"]["202"]["content"][
+                "application/json"
+            ]["schema"]["$ref"],
+            "#/components/schemas/ScreenshotTask",
+        )
+        self.assertEqual(
+            paths["/api/v1/jobs/{jobId}/screenshots/extract"]["post"]["responses"]["400"]["content"][
+                "application/json"
+            ]["schema"]["$ref"],
+            "#/components/schemas/Error",
+        )
+        self.assertEqual(
+            paths["/api/v1/jobs/{jobId}/screenshots/extract"]["post"]["responses"]["404"]["content"][
+                "application/json"
+            ]["schema"]["$ref"],
+            "#/components/schemas/NoLeakNotFoundError",
+        )
+        self.assertEqual(
+            paths["/api/v1/jobs/{jobId}/screenshots/uploads"]["post"]["requestBody"]["content"]["application/json"][
+                "schema"
+            ]["$ref"],
+            "#/components/schemas/CreateCustomUploadRequest",
+        )
+        self.assertEqual(
+            paths["/api/v1/jobs/{jobId}/screenshots/uploads"]["post"]["responses"]["201"]["content"][
+                "application/json"
+            ]["schema"]["$ref"],
+            "#/components/schemas/CustomUploadTicket",
+        )
+        self.assertEqual(
+            paths["/api/v1/jobs/{jobId}/screenshots/uploads"]["post"]["responses"]["404"]["content"][
+                "application/json"
+            ]["schema"]["$ref"],
+            "#/components/schemas/NoLeakNotFoundError",
+        )
+        self.assertEqual(
+            paths["/api/v1/jobs/{jobId}/screenshots/uploads/{uploadId}/confirm"]["post"]["requestBody"]["content"][
+                "application/json"
+            ]["schema"]["$ref"],
+            "#/components/schemas/ConfirmCustomUploadRequest",
+        )
+        self.assertEqual(
+            paths["/api/v1/jobs/{jobId}/screenshots/uploads/{uploadId}/confirm"]["post"]["responses"]["200"]["content"][
+                "application/json"
+            ]["schema"]["$ref"],
+            "#/components/schemas/ConfirmCustomUploadResponse",
+        )
+        self.assertEqual(
+            paths["/api/v1/jobs/{jobId}/screenshots/uploads/{uploadId}/confirm"]["post"]["responses"]["404"]["content"][
+                "application/json"
+            ]["schema"]["$ref"],
+            "#/components/schemas/NoLeakNotFoundError",
+        )
+        self.assertEqual(
+            paths["/api/v1/instructions/{instructionId}/anchors"]["post"]["requestBody"]["content"]["application/json"][
+                "schema"
+            ]["$ref"],
+            "#/components/schemas/ScreenshotAnchorCreateRequest",
+        )
+        self.assertEqual(
+            paths["/api/v1/instructions/{instructionId}/anchors"]["post"]["responses"]["201"]["content"][
+                "application/json"
+            ]["schema"]["$ref"],
+            "#/components/schemas/ScreenshotAnchor",
+        )
+        self.assertEqual(
+            paths["/api/v1/instructions/{instructionId}/anchors"]["post"]["responses"]["404"]["content"][
+                "application/json"
+            ]["schema"]["$ref"],
+            "#/components/schemas/NoLeakNotFoundError",
+        )
+        anchor_list_parameters = paths["/api/v1/instructions/{instructionId}/anchors"]["get"]["parameters"]
+        instruction_version_parameter = next(
+            item for item in anchor_list_parameters if item["name"] == "instruction_version_id"
+        )
+        self.assertEqual(instruction_version_parameter["schema"]["type"], "string")
+        include_deleted_parameter = next(item for item in anchor_list_parameters if item["name"] == "include_deleted_assets")
+        self.assertEqual(include_deleted_parameter["schema"]["type"], "boolean")
+        self.assertEqual(include_deleted_parameter["schema"]["default"], False)
+        self.assertEqual(
+            paths["/api/v1/instructions/{instructionId}/anchors"]["get"]["responses"]["200"]["content"][
+                "application/json"
+            ]["schema"]["type"],
+            "array",
+        )
+        self.assertEqual(
+            paths["/api/v1/instructions/{instructionId}/anchors"]["get"]["responses"]["200"]["content"][
+                "application/json"
+            ]["schema"]["items"]["$ref"],
+            "#/components/schemas/ScreenshotAnchor",
+        )
+        self.assertEqual(
+            paths["/api/v1/instructions/{instructionId}/anchors"]["get"]["responses"]["404"]["content"][
+                "application/json"
+            ]["schema"]["$ref"],
+            "#/components/schemas/NoLeakNotFoundError",
+        )
+        anchor_parameters = paths["/api/v1/anchors/{anchorId}"]["get"]["parameters"]
+        target_version_parameter = next(
+            item for item in anchor_parameters if item["name"] == "target_instruction_version_id"
+        )
+        self.assertEqual(target_version_parameter["schema"]["type"], "string")
+        self.assertEqual(
+            paths["/api/v1/anchors/{anchorId}"]["get"]["responses"]["200"]["content"]["application/json"]["schema"][
+                "$ref"
+            ],
+            "#/components/schemas/ScreenshotAnchor",
+        )
+        self.assertEqual(
+            paths["/api/v1/anchors/{anchorId}"]["get"]["responses"]["404"]["content"]["application/json"]["schema"][
+                "$ref"
+            ],
+            "#/components/schemas/NoLeakNotFoundError",
+        )
+        self.assertEqual(
+            paths["/api/v1/anchors/{anchorId}/attach-upload"]["post"]["requestBody"]["content"]["application/json"][
+                "schema"
+            ]["$ref"],
+            "#/components/schemas/AttachUploadedAssetRequest",
+        )
+        self.assertEqual(
+            paths["/api/v1/anchors/{anchorId}/attach-upload"]["post"]["responses"]["200"]["content"][
+                "application/json"
+            ]["schema"]["$ref"],
+            "#/components/schemas/ScreenshotAnchor",
+        )
+        self.assertEqual(
+            paths["/api/v1/anchors/{anchorId}/attach-upload"]["post"]["responses"]["404"]["content"][
+                "application/json"
+            ]["schema"]["$ref"],
+            "#/components/schemas/NoLeakNotFoundError",
+        )
+        self.assertEqual(
+            paths["/api/v1/anchors/{anchorId}/annotations"]["post"]["requestBody"]["content"]["application/json"][
+                "schema"
+            ]["$ref"],
+            "#/components/schemas/AnnotateScreenshotRequest",
+        )
+        self.assertEqual(
+            paths["/api/v1/anchors/{anchorId}/annotations"]["post"]["responses"]["200"]["content"][
+                "application/json"
+            ]["schema"]["$ref"],
+            "#/components/schemas/AnnotateScreenshotResponse",
+        )
+        self.assertEqual(
+            paths["/api/v1/anchors/{anchorId}/annotations"]["post"]["responses"]["400"]["content"][
+                "application/json"
+            ]["schema"]["$ref"],
+            "#/components/schemas/Error",
+        )
+        self.assertEqual(
+            paths["/api/v1/anchors/{anchorId}/annotations"]["post"]["responses"]["404"]["content"][
+                "application/json"
+            ]["schema"]["$ref"],
+            "#/components/schemas/NoLeakNotFoundError",
+        )
+        self.assertEqual(
+            paths["/api/v1/anchors/{anchorId}/replace"]["post"]["requestBody"]["content"]["application/json"][
+                "schema"
+            ]["$ref"],
+            "#/components/schemas/ScreenshotReplaceRequest",
+        )
+        self.assertEqual(
+            paths["/api/v1/anchors/{anchorId}/replace"]["post"]["responses"]["200"]["content"]["application/json"][
+                "schema"
+            ]["$ref"],
+            "#/components/schemas/ScreenshotTask",
+        )
+        self.assertEqual(
+            paths["/api/v1/anchors/{anchorId}/replace"]["post"]["responses"]["202"]["content"]["application/json"][
+                "schema"
+            ]["$ref"],
+            "#/components/schemas/ScreenshotTask",
+        )
+        self.assertEqual(
+            paths["/api/v1/anchors/{anchorId}/replace"]["post"]["responses"]["400"]["content"]["application/json"][
+                "schema"
+            ]["$ref"],
+            "#/components/schemas/Error",
+        )
+        self.assertEqual(
+            paths["/api/v1/anchors/{anchorId}/replace"]["post"]["responses"]["404"]["content"]["application/json"][
+                "schema"
+            ]["$ref"],
+            "#/components/schemas/NoLeakNotFoundError",
+        )
+        self.assertEqual(
+            paths["/api/v1/anchors/{anchorId}/assets/{assetId}"]["delete"]["responses"]["200"]["content"][
+                "application/json"
+            ]["schema"]["$ref"],
+            "#/components/schemas/SoftDeleteScreenshotAssetResponse",
+        )
+        self.assertEqual(
+            paths["/api/v1/anchors/{anchorId}/assets/{assetId}"]["delete"]["responses"]["404"]["content"][
+                "application/json"
+            ]["schema"]["$ref"],
+            "#/components/schemas/NoLeakNotFoundError",
+        )
+        self.assertEqual(
+            paths["/api/v1/screenshot-tasks/{taskId}"]["get"]["responses"]["200"]["content"]["application/json"][
+                "schema"
+            ]["$ref"],
+            "#/components/schemas/ScreenshotTask",
+        )
+        self.assertEqual(
+            paths["/api/v1/screenshot-tasks/{taskId}"]["get"]["responses"]["404"]["content"]["application/json"][
+                "schema"
+            ]["$ref"],
+            "#/components/schemas/NoLeakNotFoundError",
+        )
+        self.assertEqual(
+            paths["/api/v1/instructions/{instructionId}"]["get"]["responses"]["200"]["content"]["application/json"][
+                "schema"
+            ]["$ref"],
+            "#/components/schemas/Instruction",
+        )
+        self.assertEqual(
+            paths["/api/v1/instructions/{instructionId}"]["get"]["responses"]["404"]["content"]["application/json"][
+                "schema"
+            ]["$ref"],
+            "#/components/schemas/NoLeakNotFoundError",
+        )
+        self.assertEqual(
+            paths["/api/v1/instructions/{instructionId}"]["put"]["responses"]["200"]["content"]["application/json"][
+                "schema"
+            ]["$ref"],
+            "#/components/schemas/Instruction",
+        )
+        self.assertEqual(
+            paths["/api/v1/instructions/{instructionId}"]["put"]["responses"]["404"]["content"]["application/json"][
+                "schema"
+            ]["$ref"],
+            "#/components/schemas/NoLeakNotFoundError",
+        )
+        self.assertEqual(
+            paths["/api/v1/instructions/{instructionId}"]["put"]["responses"]["409"]["content"]["application/json"][
+                "schema"
+            ]["$ref"],
+            "#/components/schemas/VersionConflictError",
+        )
+        self.assertEqual(
+            paths["/api/v1/instructions/{instructionId}"]["put"]["requestBody"]["content"]["application/json"]["schema"][
+                "$ref"
+            ],
+            "#/components/schemas/UpdateInstructionRequest",
+        )
+        self.assertEqual(
+            paths["/api/v1/instructions/{instructionId}/regenerate"]["post"]["requestBody"]["content"][
+                "application/json"
+            ]["schema"]["$ref"],
+            "#/components/schemas/RegenerateRequest",
+        )
+        self.assertEqual(
+            paths["/api/v1/instructions/{instructionId}/regenerate"]["post"]["responses"]["200"]["content"][
+                "application/json"
+            ]["schema"]["$ref"],
+            "#/components/schemas/RegenerateTask",
+        )
+        self.assertEqual(
+            paths["/api/v1/instructions/{instructionId}/regenerate"]["post"]["responses"]["202"]["content"][
+                "application/json"
+            ]["schema"]["$ref"],
+            "#/components/schemas/RegenerateTask",
+        )
+        self.assertEqual(
+            paths["/api/v1/instructions/{instructionId}/regenerate"]["post"]["responses"]["400"]["content"][
+                "application/json"
+            ]["schema"]["$ref"],
+            "#/components/schemas/Error",
+        )
+        self.assertEqual(
+            paths["/api/v1/instructions/{instructionId}/regenerate"]["post"]["responses"]["404"]["content"][
+                "application/json"
+            ]["schema"]["$ref"],
+            "#/components/schemas/NoLeakNotFoundError",
+        )
+        self.assertEqual(
+            paths["/api/v1/instructions/{instructionId}/regenerate"]["post"]["responses"]["409"]["content"][
+                "application/json"
+            ]["schema"]["$ref"],
+            "#/components/schemas/VersionConflictError",
+        )
+        self.assertEqual(
+            paths["/api/v1/tasks/{taskId}"]["get"]["responses"]["200"]["content"]["application/json"]["schema"]["$ref"],
+            "#/components/schemas/RegenerateTask",
+        )
+        self.assertEqual(
+            paths["/api/v1/tasks/{taskId}"]["get"]["responses"]["404"]["content"]["application/json"]["schema"]["$ref"],
+            "#/components/schemas/NoLeakNotFoundError",
+        )
+        regenerate_request_schema = response.json()["components"]["schemas"]["RegenerateRequest"]
+        self.assertEqual(set(regenerate_request_schema["required"]), {"base_version", "selection", "client_request_id"})
+        self.assertEqual(regenerate_request_schema["properties"]["base_version"]["minimum"], 1)
+        self.assertEqual(
+            regenerate_request_schema["properties"]["selection"]["$ref"],
+            "#/components/schemas/RegenerateSelection",
+        )
+        regenerate_selection_schema = response.json()["components"]["schemas"]["RegenerateSelection"]
+        selection_variants = regenerate_selection_schema["oneOf"]
+        self.assertEqual(len(selection_variants), 2)
+        self.assertEqual(selection_variants[0]["required"], ["block_id"])
+        self.assertEqual(selection_variants[1]["required"], ["char_range"])
+        regenerate_status_schema = response.json()["components"]["schemas"]["RegenerateTaskStatus"]
+        self.assertEqual(regenerate_status_schema["enum"], ["PENDING", "RUNNING", "SUCCEEDED", "FAILED"])
+        screenshot_task_schema = response.json()["components"]["schemas"]["ScreenshotTask"]
+        self.assertEqual(set(screenshot_task_schema["required"]), {"task_id", "status", "operation"})
+        screenshot_operation_schema = response.json()["components"]["schemas"]["ScreenshotOperation"]
+        self.assertEqual(screenshot_operation_schema["enum"], ["extract", "replace"])
+        screenshot_task_status_schema = response.json()["components"]["schemas"]["ScreenshotTaskStatus"]
+        self.assertEqual(screenshot_task_status_schema["enum"], ["PENDING", "RUNNING", "SUCCEEDED", "FAILED"])
+        screenshot_request_schema = response.json()["components"]["schemas"]["ScreenshotExtractionRequest"]
+        self.assertEqual(
+            set(screenshot_request_schema["required"]),
+            {"instruction_id", "instruction_version_id", "timestamp_ms"},
+        )
+        self.assertEqual(screenshot_request_schema["properties"]["offset_ms"]["default"], 0)
+        self.assertEqual(screenshot_request_schema["properties"]["strategy"]["default"], "precise")
+        self.assertEqual(screenshot_request_schema["properties"]["format"]["default"], "png")
+        self.assertEqual(
+            screenshot_request_schema["properties"]["char_range"]["$ref"],
+            "#/components/schemas/CharRange",
+        )
+        screenshot_replace_schema = response.json()["components"]["schemas"]["ScreenshotReplaceRequest"]
+        self.assertEqual(
+            set(screenshot_replace_schema["required"]),
+            {"instruction_version_id", "timestamp_ms"},
+        )
+        self.assertEqual(screenshot_replace_schema["properties"]["offset_ms"]["default"], 0)
+        self.assertEqual(screenshot_replace_schema["properties"]["strategy"]["default"], "precise")
+        self.assertEqual(screenshot_replace_schema["properties"]["format"]["default"], "png")
+        screenshot_anchor_create_schema = response.json()["components"]["schemas"]["ScreenshotAnchorCreateRequest"]
+        self.assertEqual(
+            set(screenshot_anchor_create_schema["required"]),
+            {"instruction_version_id", "addressing"},
+        )
+        self.assertEqual(
+            screenshot_anchor_create_schema["properties"]["addressing"]["$ref"],
+            "#/components/schemas/AnchorAddress",
+        )
+        anchor_address_schema = response.json()["components"]["schemas"]["AnchorAddress"]
+        self.assertEqual(anchor_address_schema["properties"]["address_type"]["$ref"], "#/components/schemas/AnchorAddressType")
+        self.assertEqual(anchor_address_schema["properties"]["char_range"]["$ref"], "#/components/schemas/CharRange")
+        self.assertEqual(anchor_address_schema["properties"]["strategy"]["type"], "string")
+        self.assertEqual(set(anchor_address_schema["required"]), {"address_type"})
+        anchor_address_type_schema = response.json()["components"]["schemas"]["AnchorAddressType"]
+        self.assertEqual(anchor_address_type_schema["enum"], ["block_id", "char_range"])
+        anchor_resolution_schema = response.json()["components"]["schemas"]["AnchorResolution"]
+        self.assertEqual(
+            set(anchor_resolution_schema["required"]),
+            {"source_instruction_version_id", "target_instruction_version_id", "resolution_state"},
+        )
+        self.assertEqual(anchor_resolution_schema["properties"]["resolution_state"]["$ref"], "#/components/schemas/AnchorResolutionState")
+        self.assertEqual(anchor_resolution_schema["properties"]["trace"]["type"], "object")
+        anchor_resolution_state_schema = response.json()["components"]["schemas"]["AnchorResolutionState"]
+        self.assertEqual(anchor_resolution_state_schema["enum"], ["retain", "remap", "unresolved"])
+        screenshot_anchor_schema = response.json()["components"]["schemas"]["ScreenshotAnchor"]
+        self.assertEqual(screenshot_anchor_schema["properties"]["addressing"]["$ref"], "#/components/schemas/AnchorAddress")
+        self.assertIn(
+            {"$ref": "#/components/schemas/AnchorResolution"},
+            screenshot_anchor_schema["properties"]["resolution"]["anyOf"],
+        )
+        soft_delete_schema = response.json()["components"]["schemas"]["SoftDeleteScreenshotAssetResponse"]
+        self.assertEqual(
+            set(soft_delete_schema["required"]),
+            {"anchor_id", "deleted_asset_id", "active_asset_id"},
+        )
+        create_custom_upload_schema = response.json()["components"]["schemas"]["CreateCustomUploadRequest"]
+        self.assertEqual(
+            set(create_custom_upload_schema["required"]),
+            {"filename", "mime_type", "size_bytes", "checksum_sha256"},
+        )
+        self.assertEqual(
+            create_custom_upload_schema["properties"]["mime_type"]["$ref"],
+            "#/components/schemas/ScreenshotMimeType",
+        )
+        self.assertEqual(create_custom_upload_schema["properties"]["filename"]["minLength"], 1)
+        self.assertEqual(create_custom_upload_schema["properties"]["filename"]["maxLength"], 255)
+        self.assertEqual(create_custom_upload_schema["properties"]["size_bytes"]["minimum"], 1)
+        self.assertEqual(
+            create_custom_upload_schema["properties"]["checksum_sha256"]["pattern"],
+            "^[0-9a-fA-F]{64}$",
+        )
+        custom_upload_ticket_schema = response.json()["components"]["schemas"]["CustomUploadTicket"]
+        self.assertEqual(
+            set(custom_upload_ticket_schema["required"]),
+            {"upload_id", "upload_url", "expires_at", "max_size_bytes", "allowed_mime_types"},
+        )
+        self.assertEqual(
+            custom_upload_ticket_schema["properties"]["allowed_mime_types"]["items"]["$ref"],
+            "#/components/schemas/ScreenshotMimeType",
+        )
+        confirm_custom_upload_schema = response.json()["components"]["schemas"]["ConfirmCustomUploadRequest"]
+        self.assertEqual(
+            set(confirm_custom_upload_schema["required"]),
+            {"mime_type", "size_bytes", "checksum_sha256", "width", "height"},
+        )
+        self.assertEqual(confirm_custom_upload_schema["properties"]["width"]["minimum"], 1)
+        self.assertEqual(confirm_custom_upload_schema["properties"]["height"]["minimum"], 1)
+        self.assertEqual(
+            confirm_custom_upload_schema["properties"]["checksum_sha256"]["pattern"],
+            "^[0-9a-fA-F]{64}$",
+        )
+        attach_uploaded_asset_schema = response.json()["components"]["schemas"]["AttachUploadedAssetRequest"]
+        self.assertEqual(
+            set(attach_uploaded_asset_schema["required"]),
+            {"upload_id", "instruction_version_id"},
+        )
+        annotation_operation_schema = response.json()["components"]["schemas"]["AnnotationOperation"]
+        self.assertEqual(
+            set(annotation_operation_schema["required"]),
+            {"op_type", "geometry", "style"},
+        )
+        self.assertEqual(
+            annotation_operation_schema["properties"]["op_type"]["$ref"],
+            "#/components/schemas/AnnotationOperationType",
+        )
+        self.assertEqual(annotation_operation_schema["properties"]["geometry"]["type"], "object")
+        self.assertEqual(annotation_operation_schema["properties"]["style"]["type"], "object")
+        annotation_operation_type_schema = response.json()["components"]["schemas"]["AnnotationOperationType"]
+        self.assertEqual(annotation_operation_type_schema["enum"], ["blur", "arrow", "marker", "pencil"])
+        annotate_request_schema = response.json()["components"]["schemas"]["AnnotateScreenshotRequest"]
+        self.assertEqual(
+            set(annotate_request_schema["required"]),
+            {"base_asset_id", "operations"},
+        )
+        self.assertEqual(
+            annotate_request_schema["properties"]["operations"]["items"]["$ref"],
+            "#/components/schemas/AnnotationOperation",
+        )
+        self.assertEqual(annotate_request_schema["properties"]["operations"]["minItems"], 1)
+        annotate_response_schema = response.json()["components"]["schemas"]["AnnotateScreenshotResponse"]
+        self.assertEqual(
+            set(annotate_response_schema["required"]),
+            {"anchor_id", "base_asset_id", "ops_hash", "rendered_asset_id", "active_asset_id"},
+        )
+        screenshot_asset_schema = response.json()["components"]["schemas"]["ScreenshotAsset"]
+        self.assertEqual(
+            screenshot_asset_schema["properties"]["kind"]["$ref"],
+            "#/components/schemas/ScreenshotAssetKind",
+        )
+        self.assertEqual(
+            screenshot_asset_schema["properties"]["mime_type"]["$ref"],
+            "#/components/schemas/ScreenshotMimeType",
+        )
+        self.assertEqual(screenshot_asset_schema["properties"]["extraction_key"]["type"], "string")
+        self.assertEqual(screenshot_asset_schema["properties"]["checksum_sha256"]["type"], "string")
+        self.assertEqual(screenshot_asset_schema["properties"]["upload_id"]["type"], "string")
+        self.assertEqual(screenshot_asset_schema["properties"]["ops_hash"]["type"], "string")
+        self.assertEqual(screenshot_asset_schema["properties"]["rendered_from_asset_id"]["type"], "string")
+        screenshot_asset_kind_schema = response.json()["components"]["schemas"]["ScreenshotAssetKind"]
+        self.assertEqual(
+            screenshot_asset_kind_schema["enum"],
+            ["EXTRACTED", "UPLOADED", "ANNOTATED"],
+        )
+        screenshot_mime_type_schema = response.json()["components"]["schemas"]["ScreenshotMimeType"]
+        self.assertEqual(
+            screenshot_mime_type_schema["enum"],
+            ["image/png", "image/jpeg", "image/webp"],
+        )
+        create_export_request_schema = response.json()["components"]["schemas"]["CreateExportRequest"]
+        self.assertEqual(
+            set(create_export_request_schema["required"]),
+            {"format", "instruction_version_id"},
+        )
+        self.assertEqual(
+            create_export_request_schema["properties"]["format"]["$ref"],
+            "#/components/schemas/ExportFormat",
+        )
+        self.assertEqual(create_export_request_schema["properties"]["idempotency_key"]["type"], "string")
+        export_format_schema = response.json()["components"]["schemas"]["ExportFormat"]
+        self.assertEqual(export_format_schema["enum"], ["PDF", "MD_ZIP"])
+        export_status_schema = response.json()["components"]["schemas"]["ExportStatus"]
+        self.assertEqual(export_status_schema["enum"], ["REQUESTED", "RUNNING", "SUCCEEDED", "FAILED"])
+        export_audit_event_type_schema = response.json()["components"]["schemas"]["ExportAuditEventType"]
+        self.assertEqual(
+            export_audit_event_type_schema["enum"],
+            ["EXPORT_REQUESTED", "EXPORT_STARTED", "EXPORT_SUCCEEDED", "EXPORT_FAILED"],
+        )
+        export_anchor_binding_schema = response.json()["components"]["schemas"]["ExportAnchorBinding"]
+        self.assertEqual(
+            set(export_anchor_binding_schema["required"]),
+            {"anchor_id", "active_asset_id"},
+        )
+        export_provenance_schema = response.json()["components"]["schemas"]["ExportProvenance"]
+        self.assertEqual(
+            set(export_provenance_schema["required"]),
+            {
+                "instruction_version_id",
+                "screenshot_set_hash",
+                "anchors",
+                "instruction_snapshot_id",
+                "model_profile_id",
+                "prompt_template_id",
+            },
+        )
+        self.assertEqual(
+            export_provenance_schema["properties"]["anchors"]["items"]["$ref"],
+            "#/components/schemas/ExportAnchorBinding",
+        )
+        self.assertEqual(export_provenance_schema["properties"]["instruction_snapshot_id"]["type"], "string")
+        self.assertEqual(export_provenance_schema["properties"]["model_profile_id"]["type"], "string")
+        self.assertEqual(export_provenance_schema["properties"]["prompt_template_id"]["type"], "string")
+        self.assertEqual(export_provenance_schema["properties"]["prompt_params_ref"]["type"], "string")
+        export_schema = response.json()["components"]["schemas"]["Export"]
+        self.assertEqual(
+            set(export_schema["required"]),
+            {
+                "id",
+                "job_id",
+                "format",
+                "status",
+                "instruction_version_id",
+                "identity_key",
+                "screenshot_set_hash",
+                "created_at",
+                "updated_at",
+            },
+        )
+        self.assertEqual(export_schema["properties"]["format"]["$ref"], "#/components/schemas/ExportFormat")
+        self.assertEqual(export_schema["properties"]["status"]["$ref"], "#/components/schemas/ExportStatus")
+        self.assertEqual(export_schema["properties"]["provenance"]["$ref"], "#/components/schemas/ExportProvenance")
+        self.assertEqual(export_schema["properties"]["provenance_frozen_at"]["type"], "string")
+        self.assertEqual(export_schema["properties"]["provenance_frozen_at"]["format"], "date-time")
+        self.assertEqual(
+            export_schema["properties"]["last_audit_event"]["$ref"],
+            "#/components/schemas/ExportAuditEventType",
+        )
+        instruction_parameters = paths["/api/v1/instructions/{instructionId}"]["get"]["parameters"]
+        version_parameter = next(item for item in instruction_parameters if item["name"] == "version")
+        self.assertEqual(version_parameter["schema"]["type"], "integer")
+        self.assertEqual(version_parameter["schema"]["minimum"], 1)
+        instruction_schema = response.json()["components"]["schemas"]["Instruction"]
+        instruction_id_alias = instruction_schema["properties"]["id"]
+        self.assertEqual(instruction_id_alias["type"], "string")
+        self.assertTrue(instruction_id_alias["deprecated"])
+        self.assertEqual(instruction_id_alias["description"], "Deprecated alias of instruction_id.")
+        self.assertNotIn("id", instruction_schema["required"])
+        update_instruction_schema = response.json()["components"]["schemas"]["UpdateInstructionRequest"]
+        self.assertEqual(set(update_instruction_schema["required"]), {"base_version", "markdown"})
+        self.assertEqual(update_instruction_schema["properties"]["base_version"]["minimum"], 1)
         self.assertEqual(
             set(paths["/api/v1/internal/jobs/{jobId}/status"]["post"]["responses"].keys()),
             {"200", "204", "401", "404", "409"},
         )
         self.assertEqual(
+            paths["/api/v1/internal/jobs/{jobId}/status"]["post"]["responses"]["409"]["content"]["application/json"]["schema"]["oneOf"],
+            [
+                {"$ref": "#/components/schemas/FsmTransitionError"},
+                {"$ref": "#/components/schemas/CallbackOrderingError"},
+                {"$ref": "#/components/schemas/EventIdPayloadMismatchError"},
+            ],
+        )
+        self.assertEqual(
+            paths["/api/v1/internal/jobs/{jobId}/status"]["post"]["responses"]["404"]["content"]["application/json"]["schema"]["$ref"],
+            "#/components/schemas/NoLeakNotFoundError",
+        )
+        self.assertEqual(
             paths["/api/v1/projects/{projectId}"]["get"]["responses"]["404"]["content"]["application/json"]["schema"]["$ref"],
             "#/components/schemas/NoLeakNotFoundError",
+        )
+        callback_post = paths["/api/v1/internal/jobs/{jobId}/status"]["post"]
+        request_schema_ref = callback_post["requestBody"]["content"]["application/json"]["schema"]["$ref"]
+        self.assertEqual(request_schema_ref, "#/components/schemas/StatusCallbackRequest")
+        callback_schema = response.json()["components"]["schemas"]["StatusCallbackRequest"]
+        self.assertIn("actor_type", callback_schema["properties"])
+        self.assertIn("artifact_updates", callback_schema["properties"])
+        self.assertIn("failure_code", callback_schema["properties"])
+        self.assertIn("failure_message", callback_schema["properties"])
+        self.assertIn("failed_stage", callback_schema["properties"])
+        conflict_schema = callback_post["responses"]["409"]["content"]["application/json"]["schema"]
+        conflict_variants = conflict_schema.get("oneOf") or conflict_schema.get("anyOf") or []
+        conflict_refs = {item["$ref"] for item in conflict_variants}
+        self.assertEqual(
+            conflict_refs,
+            {
+                "#/components/schemas/FsmTransitionError",
+                "#/components/schemas/CallbackOrderingError",
+                "#/components/schemas/EventIdPayloadMismatchError",
+            },
         )
 
     def test_missing_authorization_header_returns_401_and_no_project_side_effect(self) -> None:
@@ -165,37 +945,606 @@ class AuthApiTests(_SettingsEnvCase):
     def test_internal_callback_uses_callback_secret_not_bearer(self) -> None:
         app = create_app()
         client = TestClient(app)
+        store = app.state.store
+        project = store.create_project(owner_id="owner-1", name="Project")
+        job = store.create_job(owner_id="owner-1", project_id=project.id)
 
         body = {
             "event_id": "evt-1",
-            "status": "CREATED",
+            "status": "UPLOADING",
             "occurred_at": "2026-02-22T00:00:00Z",
             "correlation_id": "corr-1",
         }
 
-        unauthorized = client.post("/api/v1/internal/jobs/job-1/status", json=body)
+        unauthorized = client.post(f"/api/v1/internal/jobs/{job.id}/status", json=body)
         self.assertEqual(unauthorized.status_code, 401)
         self.assertEqual(unauthorized.json()["code"], "UNAUTHORIZED")
 
         authorized = client.post(
-            "/api/v1/internal/jobs/job-1/status",
+            f"/api/v1/internal/jobs/{job.id}/status",
             headers={"X-Callback-Secret": "test-callback-secret"},
             json=body,
         )
         self.assertEqual(authorized.status_code, 204)
+        self.assertEqual(store.jobs[job.id].status.value, "UPLOADING")
 
-    def test_invalid_callback_payload_returns_401(self) -> None:
+    def test_invalid_callback_secret_causes_no_mutation_side_effects(self) -> None:
         app = create_app()
         client = TestClient(app)
+        store = app.state.store
+        project = store.create_project(owner_id="owner-1", name="Project")
+        job = store.create_job(owner_id="owner-1", project_id=project.id)
+        before_status = store.jobs[job.id].status
+        before_job_writes = store.job_write_count
+
+        body = {
+            "event_id": "evt-2",
+            "status": "CREATED",
+            "occurred_at": "2026-02-22T00:00:00Z",
+            "correlation_id": "corr-2",
+        }
 
         response = client.post(
-            "/api/v1/internal/jobs/job-1/status",
-            headers={"X-Callback-Secret": "test-callback-secret"},
-            json={"event_id": "evt-1"},
+            f"/api/v1/internal/jobs/{job.id}/status",
+            headers={"X-Callback-Secret": "wrong-secret"},
+            json=body,
         )
 
         self.assertEqual(response.status_code, 401)
         self.assertEqual(response.json()["code"], "UNAUTHORIZED")
+        self.assertEqual(store.jobs[job.id].status, before_status)
+        self.assertEqual(store.job_write_count, before_job_writes)
+
+    def test_invalid_callback_payload_returns_409_validation_error(self) -> None:
+        app = create_app()
+        client = TestClient(app)
+        store = app.state.store
+        project = store.create_project(owner_id="owner-1", name="Project")
+        job = store.create_job(owner_id="owner-1", project_id=project.id)
+
+        response = client.post(
+            f"/api/v1/internal/jobs/{job.id}/status",
+            headers={"X-Callback-Secret": "test-callback-secret"},
+            json={"event_id": "evt-1"},
+        )
+
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.json()["code"], "VALIDATION_ERROR")
+
+    def test_callback_with_valid_secret_and_missing_job_returns_no_leak_404(self) -> None:
+        app = create_app()
+        client = TestClient(app)
+
+        body = {
+            "event_id": "evt-3",
+            "status": "CREATED",
+            "occurred_at": "2026-02-22T00:00:00Z",
+            "correlation_id": "corr-3",
+        }
+
+        response = client.post(
+            "/api/v1/internal/jobs/missing-job/status",
+            headers={"X-Callback-Secret": "test-callback-secret"},
+            json=body,
+        )
+
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(response.json()["code"], "RESOURCE_NOT_FOUND")
+
+    def test_callback_invalid_self_transition_returns_409_without_side_effects(self) -> None:
+        app = create_app()
+        client = TestClient(app)
+        store = app.state.store
+        project = store.create_project(owner_id="owner-1", name="Project")
+        job = store.create_job(owner_id="owner-1", project_id=project.id)
+        before_status = store.jobs[job.id].status
+        before_updated_at = store.jobs[job.id].updated_at
+        before_job_writes = store.job_write_count
+        before_callback_event_count = len(store.callback_events)
+        before_transition_audit_count = len(store.transition_audit_events)
+        before_latest = store.latest_callback_at_by_job.get(job.id)
+
+        body = {
+            "event_id": "evt-self-invalid-1",
+            "status": "CREATED",
+            "occurred_at": "2026-02-22T00:00:00Z",
+            "correlation_id": "corr-self-invalid-1",
+        }
+
+        response = client.post(
+            f"/api/v1/internal/jobs/{job.id}/status",
+            headers={"X-Callback-Secret": "test-callback-secret"},
+            json=body,
+        )
+
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.json()["code"], "FSM_TRANSITION_INVALID")
+        self.assertEqual(response.json()["details"]["current_status"], "CREATED")
+        self.assertEqual(response.json()["details"]["attempted_status"], "CREATED")
+        self.assertEqual(
+            set(response.json()["details"]["allowed_next_statuses"]),
+            {"UPLOADING", "UPLOADED", "CANCELLED"},
+        )
+        self.assertEqual(store.jobs[job.id].status, before_status)
+        self.assertEqual(store.jobs[job.id].updated_at, before_updated_at)
+        self.assertEqual(store.job_write_count, before_job_writes)
+        self.assertEqual(len(store.callback_events), before_callback_event_count)
+        self.assertEqual(len(store.transition_audit_events), before_transition_audit_count)
+        self.assertNotIn((job.id, "evt-self-invalid-1"), store.callback_events)
+        self.assertEqual(store.latest_callback_at_by_job.get(job.id), before_latest)
+
+    def test_callback_from_terminal_state_returns_409_without_side_effects(self) -> None:
+        app = create_app()
+        client = TestClient(app)
+        store = app.state.store
+        project = store.create_project(owner_id="owner-1", name="Project")
+        job = store.create_job(owner_id="owner-1", project_id=project.id)
+        store.jobs[job.id].status = JobStatus.DONE
+
+        before_status = store.jobs[job.id].status
+        before_updated_at = store.jobs[job.id].updated_at
+        before_job_writes = store.job_write_count
+        before_callback_event_count = len(store.callback_events)
+        before_transition_audit_count = len(store.transition_audit_events)
+        before_latest = store.latest_callback_at_by_job.get(job.id)
+
+        response = client.post(
+            f"/api/v1/internal/jobs/{job.id}/status",
+            headers={"X-Callback-Secret": "test-callback-secret"},
+            json={
+                "event_id": "evt-terminal-invalid-1",
+                "status": "UPLOADING",
+                "occurred_at": "2026-02-22T00:05:00Z",
+                "correlation_id": "corr-terminal-invalid-1",
+            },
+        )
+
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.json()["code"], "FSM_TERMINAL_IMMUTABLE")
+        self.assertEqual(response.json()["details"]["current_status"], "DONE")
+        self.assertEqual(response.json()["details"]["attempted_status"], "UPLOADING")
+        self.assertEqual(response.json()["details"]["allowed_next_statuses"], [])
+        self.assertEqual(store.jobs[job.id].status, before_status)
+        self.assertEqual(store.jobs[job.id].updated_at, before_updated_at)
+        self.assertEqual(store.job_write_count, before_job_writes)
+        self.assertEqual(len(store.callback_events), before_callback_event_count)
+        self.assertEqual(len(store.transition_audit_events), before_transition_audit_count)
+        self.assertNotIn((job.id, "evt-terminal-invalid-1"), store.callback_events)
+        self.assertEqual(store.latest_callback_at_by_job.get(job.id), before_latest)
+
+    def test_callback_replay_returns_200_and_replayed_payload(self) -> None:
+        app = create_app()
+        client = TestClient(app)
+        store = app.state.store
+        project = store.create_project(owner_id="owner-1", name="Project")
+        job = store.create_job(owner_id="owner-1", project_id=project.id)
+
+        body = {
+            "event_id": "evt-replay-1",
+            "status": "UPLOADING",
+            "occurred_at": "2026-02-22T00:00:00Z",
+            "correlation_id": "corr-replay-1",
+        }
+
+        first = client.post(
+            f"/api/v1/internal/jobs/{job.id}/status",
+            headers={"X-Callback-Secret": "test-callback-secret"},
+            json=body,
+        )
+        self.assertEqual(first.status_code, 204)
+        self.assertIn((job.id, "evt-replay-1"), store.callback_events)
+        first_status = store.jobs[job.id].status
+        first_updated_at = store.jobs[job.id].updated_at
+        first_job_writes = store.job_write_count
+        first_callback_event_count = len(store.callback_events)
+        first_transition_audit_count = len(store.transition_audit_events)
+        first_latest = store.latest_callback_at_by_job[job.id]
+
+        replay = client.post(
+            f"/api/v1/internal/jobs/{job.id}/status",
+            headers={"X-Callback-Secret": "test-callback-secret"},
+            json=body,
+        )
+        self.assertEqual(replay.status_code, 200)
+        self.assertEqual(replay.json()["event_id"], "evt-replay-1")
+        self.assertTrue(replay.json()["replayed"])
+        self.assertEqual(replay.json()["current_status"], "UPLOADING")
+        self.assertEqual(store.jobs[job.id].status, first_status)
+        self.assertEqual(store.jobs[job.id].updated_at, first_updated_at)
+        self.assertEqual(store.job_write_count, first_job_writes)
+        self.assertEqual(len(store.callback_events), first_callback_event_count)
+        self.assertEqual(len(store.transition_audit_events), first_transition_audit_count)
+        self.assertEqual(store.latest_callback_at_by_job[job.id], first_latest)
+
+    def test_callback_replay_payload_mismatch_returns_409(self) -> None:
+        app = create_app()
+        client = TestClient(app)
+        store = app.state.store
+        project = store.create_project(owner_id="owner-1", name="Project")
+        job = store.create_job(owner_id="owner-1", project_id=project.id)
+
+        initial = {
+            "event_id": "evt-replay-2",
+            "status": "UPLOADING",
+            "occurred_at": "2026-02-22T00:00:00Z",
+            "actor_type": "orchestrator",
+            "correlation_id": "corr-replay-2",
+        }
+        mismatch = {
+            "event_id": "evt-replay-2",
+            "status": "UPLOADING",
+            "occurred_at": "2026-02-22T00:00:00Z",
+            "actor_type": "system",
+            "correlation_id": "corr-replay-2",
+        }
+
+        first = client.post(
+            f"/api/v1/internal/jobs/{job.id}/status",
+            headers={"X-Callback-Secret": "test-callback-secret"},
+            json=initial,
+        )
+        self.assertEqual(first.status_code, 204)
+        status_before_conflict = store.jobs[job.id].status
+        updated_at_before_conflict = store.jobs[job.id].updated_at
+        job_writes_before_conflict = store.job_write_count
+        callback_event_count_before_conflict = len(store.callback_events)
+        transition_audit_count_before_conflict = len(store.transition_audit_events)
+        latest_before_conflict = store.latest_callback_at_by_job[job.id]
+
+        second = client.post(
+            f"/api/v1/internal/jobs/{job.id}/status",
+            headers={"X-Callback-Secret": "test-callback-secret"},
+            json=mismatch,
+        )
+        self.assertEqual(second.status_code, 409)
+        self.assertEqual(second.json()["code"], "EVENT_ID_PAYLOAD_MISMATCH")
+        self.assertEqual(second.json()["details"]["event_id"], "evt-replay-2")
+        self.assertEqual(store.jobs[job.id].status, status_before_conflict)
+        self.assertEqual(store.jobs[job.id].updated_at, updated_at_before_conflict)
+        self.assertEqual(store.job_write_count, job_writes_before_conflict)
+        self.assertEqual(len(store.callback_events), callback_event_count_before_conflict)
+        self.assertEqual(len(store.transition_audit_events), transition_audit_count_before_conflict)
+        self.assertEqual(store.latest_callback_at_by_job[job.id], latest_before_conflict)
+
+    def test_callback_out_of_order_returns_409(self) -> None:
+        app = create_app()
+        client = TestClient(app)
+        store = app.state.store
+        project = store.create_project(owner_id="owner-1", name="Project")
+        job = store.create_job(owner_id="owner-1", project_id=project.id)
+
+        first = {
+            "event_id": "evt-order-1",
+            "status": "UPLOADING",
+            "occurred_at": "2026-02-22T01:00:00Z",
+            "correlation_id": "corr-order-1",
+        }
+        out_of_order = {
+            "event_id": "evt-order-2",
+            "status": "UPLOADED",
+            "occurred_at": "2026-02-22T00:30:00Z",
+            "correlation_id": "corr-order-2",
+        }
+
+        response1 = client.post(
+            f"/api/v1/internal/jobs/{job.id}/status",
+            headers={"X-Callback-Secret": "test-callback-secret"},
+            json=first,
+        )
+        self.assertEqual(response1.status_code, 204)
+        status_before_conflict = store.jobs[job.id].status
+        updated_at_before_conflict = store.jobs[job.id].updated_at
+        job_writes_before_conflict = store.job_write_count
+        callback_event_count_before_conflict = len(store.callback_events)
+        transition_audit_count_before_conflict = len(store.transition_audit_events)
+        latest_before_conflict = store.latest_callback_at_by_job[job.id]
+
+        response2 = client.post(
+            f"/api/v1/internal/jobs/{job.id}/status",
+            headers={"X-Callback-Secret": "test-callback-secret"},
+            json=out_of_order,
+        )
+        self.assertEqual(response2.status_code, 409)
+        self.assertEqual(response2.json()["code"], "CALLBACK_OUT_OF_ORDER")
+        self.assertEqual(store.jobs[job.id].status, status_before_conflict)
+        self.assertEqual(store.jobs[job.id].updated_at, updated_at_before_conflict)
+        self.assertEqual(store.job_write_count, job_writes_before_conflict)
+        self.assertEqual(len(store.callback_events), callback_event_count_before_conflict)
+        self.assertEqual(len(store.transition_audit_events), transition_audit_count_before_conflict)
+        self.assertEqual(store.latest_callback_at_by_job[job.id], latest_before_conflict)
+
+    def test_callback_with_equal_occurred_at_returns_409(self) -> None:
+        app = create_app()
+        client = TestClient(app)
+        store = app.state.store
+        project = store.create_project(owner_id="owner-1", name="Project")
+        job = store.create_job(owner_id="owner-1", project_id=project.id)
+
+        first = {
+            "event_id": "evt-order-eq-1",
+            "status": "UPLOADING",
+            "occurred_at": "2026-02-22T01:00:00Z",
+            "correlation_id": "corr-order-eq-1",
+        }
+        equal_timestamp = {
+            "event_id": "evt-order-eq-2",
+            "status": "UPLOADED",
+            "occurred_at": "2026-02-22T01:00:00Z",
+            "correlation_id": "corr-order-eq-2",
+        }
+
+        response1 = client.post(
+            f"/api/v1/internal/jobs/{job.id}/status",
+            headers={"X-Callback-Secret": "test-callback-secret"},
+            json=first,
+        )
+        self.assertEqual(response1.status_code, 204)
+        status_before_conflict = store.jobs[job.id].status
+        updated_at_before_conflict = store.jobs[job.id].updated_at
+        job_writes_before_conflict = store.job_write_count
+        callback_event_count_before_conflict = len(store.callback_events)
+        transition_audit_count_before_conflict = len(store.transition_audit_events)
+        latest_before_conflict = store.latest_callback_at_by_job[job.id]
+
+        response2 = client.post(
+            f"/api/v1/internal/jobs/{job.id}/status",
+            headers={"X-Callback-Secret": "test-callback-secret"},
+            json=equal_timestamp,
+        )
+        self.assertEqual(response2.status_code, 409)
+        self.assertEqual(response2.json()["code"], "CALLBACK_OUT_OF_ORDER")
+        self.assertEqual(store.jobs[job.id].status, status_before_conflict)
+        self.assertEqual(store.jobs[job.id].updated_at, updated_at_before_conflict)
+        self.assertEqual(store.job_write_count, job_writes_before_conflict)
+        self.assertEqual(len(store.callback_events), callback_event_count_before_conflict)
+        self.assertEqual(len(store.transition_audit_events), transition_audit_count_before_conflict)
+        self.assertEqual(store.latest_callback_at_by_job[job.id], latest_before_conflict)
+
+    def test_auth_logging_exposes_correlation_metadata_without_token_leak(self) -> None:
+        app = create_app()
+        client = TestClient(app)
+
+        leaked_token = "not-a-valid-token-sensitive-123"
+        correlation_id = "corr-auth-log-1"
+
+        with self.assertLogs("app.routes.dependencies", level="WARNING") as captured:
+            response = client.post(
+                "/api/v1/projects/project-1/jobs",
+                headers={
+                    "Authorization": f"Bearer {leaked_token}",
+                    "X-Correlation-Id": correlation_id,
+                },
+            )
+
+        self.assertEqual(response.status_code, 401)
+        joined = "\n".join(captured.output)
+        self.assertIn("correlation_id=", joined)
+        self.assertRegex(joined, r"correlation_id=cid-[0-9a-f]{12}")
+        self.assertNotIn(correlation_id, joined)
+        self.assertNotIn(leaked_token, joined)
+        self.assertNotIn("Authorization", joined)
+
+    def test_callback_auth_logging_does_not_leak_callback_secret(self) -> None:
+        app = create_app()
+        client = TestClient(app)
+        store = app.state.store
+        project = store.create_project(owner_id="owner-1", name="Project")
+        job = store.create_job(owner_id="owner-1", project_id=project.id)
+
+        leaked_secret = "wrong-secret-sensitive-789"
+        correlation_id = "corr-callback-auth-log-1"
+        body = {
+            "event_id": "evt-callback-auth-log-1",
+            "status": "CREATED",
+            "occurred_at": "2026-02-22T00:00:00Z",
+            "correlation_id": correlation_id,
+        }
+
+        with self.assertLogs("app.routes.dependencies", level="WARNING") as captured:
+            response = client.post(
+                f"/api/v1/internal/jobs/{job.id}/status",
+                headers={
+                    "X-Callback-Secret": leaked_secret,
+                    "X-Correlation-Id": correlation_id,
+                },
+                json=body,
+            )
+
+        self.assertEqual(response.status_code, 401)
+        joined = "\n".join(captured.output)
+        self.assertIn("correlation_id=", joined)
+        self.assertRegex(joined, r"correlation_id=cid-[0-9a-f]{12}")
+        self.assertNotIn(correlation_id, joined)
+        self.assertNotIn(leaked_secret, joined)
+        self.assertNotIn("X-Callback-Secret", joined)
+
+    def test_callback_processing_logging_redacts_sensitive_payload_content(self) -> None:
+        app = create_app()
+        client = TestClient(app)
+        store = app.state.store
+        project = store.create_project(owner_id="owner-1", name="Project")
+        job = store.create_job(owner_id="owner-1", project_id=project.id)
+
+        sensitive_transcript = "TOP-SECRET-TRANSCRIPT-CONTENT"
+        sensitive_prompt = "prompt-password-do-not-log"
+        body = {
+            "event_id": "evt-callback-log-1",
+            "status": "UPLOADING",
+            "occurred_at": "2026-02-22T00:00:00Z",
+            "correlation_id": "corr-callback-log-1",
+            "artifact_updates": {"transcript_text": sensitive_transcript},
+            "failure_message": sensitive_prompt,
+        }
+
+        with self.assertLogs("app.services.internal_callbacks", level="INFO") as captured:
+            response = client.post(
+                f"/api/v1/internal/jobs/{job.id}/status",
+                headers={"X-Callback-Secret": "test-callback-secret"},
+                json=body,
+            )
+
+        self.assertEqual(response.status_code, 204)
+        joined = "\n".join(captured.output)
+        self.assertIn("correlation_id=", joined)
+        self.assertIn("event_id=", joined)
+        self.assertIn("job_id=", joined)
+        self.assertRegex(joined, r"correlation_id=cid-[0-9a-f]{12}")
+        self.assertRegex(joined, r"event_id=eid-[0-9a-f]{12}")
+        self.assertNotIn("corr-callback-log-1", joined)
+        self.assertNotIn("evt-callback-log-1", joined)
+        self.assertNotIn(sensitive_transcript, joined)
+        self.assertNotIn(sensitive_prompt, joined)
+        self.assertNotIn("test-callback-secret", joined)
+
+    def test_auth_logging_redacts_sensitive_content_inside_identifier_fields(self) -> None:
+        app = create_app()
+        client = TestClient(app)
+
+        leaked_token = "not-a-valid-token-sensitive-456"
+        correlation_id = "TOP-SECRET-TRANSCRIPT\\nPROMPT-CONTENT"
+
+        with self.assertLogs("app.routes.dependencies", level="WARNING") as captured:
+            response = client.post(
+                "/api/v1/projects/project-1/jobs",
+                headers={
+                    "Authorization": f"Bearer {leaked_token}",
+                    "X-Correlation-Id": correlation_id,
+                },
+            )
+
+        self.assertEqual(response.status_code, 401)
+        joined = "\n".join(captured.output)
+        self.assertRegex(joined, r"correlation_id=cid-[0-9a-f]{12}")
+        self.assertNotIn("TOP-SECRET-TRANSCRIPT", joined)
+        self.assertNotIn("PROMPT-CONTENT", joined)
+        self.assertNotIn(correlation_id, joined)
+        self.assertNotIn(leaked_token, joined)
+
+    def test_callback_logging_redacts_sensitive_content_inside_identifier_fields(self) -> None:
+        app = create_app()
+        client = TestClient(app)
+        store = app.state.store
+        project = store.create_project(owner_id="owner-1", name="Project")
+        job = store.create_job(owner_id="owner-1", project_id=project.id)
+
+        raw_event_id = "evt-secret-transcript-prompt-999"
+        raw_correlation_id = "corr-secret-transcript-prompt-888"
+        body = {
+            "event_id": raw_event_id,
+            "status": "UPLOADING",
+            "occurred_at": "2026-02-22T00:00:00Z",
+            "correlation_id": raw_correlation_id,
+        }
+
+        with self.assertLogs("app.services.internal_callbacks", level="INFO") as captured:
+            response = client.post(
+                f"/api/v1/internal/jobs/{job.id}/status",
+                headers={"X-Callback-Secret": "test-callback-secret"},
+                json=body,
+            )
+
+        self.assertEqual(response.status_code, 204)
+        joined = "\n".join(captured.output)
+        self.assertRegex(joined, r"correlation_id=cid-[0-9a-f]{12}")
+        self.assertRegex(joined, r"event_id=eid-[0-9a-f]{12}")
+        self.assertNotIn(raw_event_id, joined)
+        self.assertNotIn(raw_correlation_id, joined)
+        self.assertNotIn("secret-transcript-prompt", joined)
+
+    def test_run_logging_redacts_sensitive_dispatch_and_failure_values(self) -> None:
+        app = create_app()
+        client = TestClient(app)
+        store = app.state.store
+        owner_headers = {"Authorization": "Bearer test:owner-1:editor"}
+
+        project = client.post("/api/v1/projects", headers=owner_headers, json={"name": "Owned"}).json()
+
+        success_job = client.post(f"/api/v1/projects/{project['id']}/jobs", headers=owner_headers).json()
+        sensitive_video_uri = "s3://bucket/TOP-SECRET-VIDEO-URI.mp4"
+        client.post(
+            f"/api/v1/jobs/{success_job['id']}/confirm-upload",
+            headers=owner_headers,
+            json={"video_uri": sensitive_video_uri},
+        )
+
+        with self.assertLogs("app.services.jobs", level="INFO") as dispatch_logs:
+            run_success = client.post(f"/api/v1/jobs/{success_job['id']}/run", headers=owner_headers)
+
+        self.assertEqual(run_success.status_code, 202)
+        dispatch_joined = "\n".join(dispatch_logs.output)
+        self.assertRegex(dispatch_joined, r"job_id=jid-[0-9a-f]{12}")
+        self.assertRegex(dispatch_joined, r"dispatch_id=did-[0-9a-f]{12}")
+        self.assertNotIn(sensitive_video_uri, dispatch_joined)
+        self.assertNotIn("test-callback-secret", dispatch_joined)
+
+        failing_job = client.post(f"/api/v1/projects/{project['id']}/jobs", headers=owner_headers).json()
+        failure_video_uri = "s3://bucket/ANOTHER-SENSITIVE-VIDEO-URI.mp4"
+        client.post(
+            f"/api/v1/jobs/{failing_job['id']}/confirm-upload",
+            headers=owner_headers,
+            json={"video_uri": failure_video_uri},
+        )
+
+        store.dispatch_failure_message = "UPSTREAM-SECRET-DISPATCH-DETAIL"
+        with self.assertLogs("app.services.jobs", level="WARNING") as failure_logs:
+            run_failure = client.post(f"/api/v1/jobs/{failing_job['id']}/run", headers=owner_headers)
+
+        self.assertEqual(run_failure.status_code, 502)
+        failure_joined = "\n".join(failure_logs.output)
+        self.assertIn("code=ORCHESTRATOR_DISPATCH_FAILED", failure_joined)
+        self.assertRegex(failure_joined, r"job_id=jid-[0-9a-f]{12}")
+        self.assertNotIn("UPSTREAM-SECRET-DISPATCH-DETAIL", failure_joined)
+        self.assertNotIn(failure_video_uri, failure_joined)
+
+    def test_export_status_retrieval_does_not_log_signed_download_credentials(self) -> None:
+        app = create_app()
+        client = TestClient(app)
+        store = app.state.store
+        owner_headers = {"Authorization": "Bearer test:owner-export-log-1:editor"}
+
+        project = client.post("/api/v1/projects", headers=owner_headers, json={"name": "Owned"}).json()
+        created_job = client.post(f"/api/v1/projects/{project['id']}/jobs", headers=owner_headers).json()
+        store.create_instruction_version(
+            owner_id="owner-export-log-1",
+            instruction_id="inst-export-log-1",
+            job_id=created_job["id"],
+            version=1,
+            markdown="# Intro {#intro}",
+        )
+        export_response = client.post(
+            f"/api/v1/jobs/{created_job['id']}/exports",
+            headers=owner_headers,
+            json={"format": "PDF", "instruction_version_id": "1"},
+        )
+        self.assertEqual(export_response.status_code, 202)
+        export_id = export_response.json()["id"]
+        store.exports_by_id[export_id].status = ExportStatus.SUCCEEDED
+        store.exports_by_id[export_id].provenance_frozen_at = datetime.now(UTC)
+
+        with self.assertNoLogs("app.services.jobs", level="INFO"):
+            status_response = client.get(f"/api/v1/exports/{export_id}", headers=owner_headers)
+
+        self.assertEqual(status_response.status_code, 200)
+        self.assertIn("download_url", status_response.json())
+
+    def test_store_uses_configured_export_download_settings(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "HOWERA_EXPORT_DOWNLOAD_URL_HOST": "downloads.configured.local",
+                "HOWERA_EXPORT_DOWNLOAD_URL_TTL_MINUTES": "30",
+                "HOWERA_EXPORT_DOWNLOAD_SIGNING_KEY": "configured-export-signing-key",
+            },
+            clear=False,
+        ):
+            get_settings.cache_clear()
+            app = create_app()
+
+        store = app.state.store
+        self.assertEqual(store.export_download_url_host, "downloads.configured.local")
+        self.assertEqual(store.export_download_url_ttl_minutes, 30)
+        self.assertEqual(store.export_download_signing_key, b"configured-export-signing-key")
+        get_settings.cache_clear()
 
 
 class AuthAdapterUnitTests(unittest.TestCase):

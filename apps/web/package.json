@@ -1,0 +1,35 @@
+{
+  "name": "@howera/web",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "eslint . --max-warnings=0",
+    "test:unit": "node --import tsx --test tests/unit/*.test.ts tests/unit/*.test.tsx",
+    "test:golden-path": "node --import tsx --test tests/integration/*.test.ts",
+    "test": "npm run test:unit && npm run test:golden-path",
+    "typecheck": "tsc --noEmit",
+    "check": "npm run lint && npm run test && npm run typecheck && npm run build"
+  },
+  "dependencies": {
+    "firebase": "^12.11.0",
+    "next": "^15.2.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  },
+  "devDependencies": {
+    "@eslint/eslintrc": "^3.2.0",
+    "@tailwindcss/postcss": "^4.0.15",
+    "@types/node": "^22.13.0",
+    "@types/react": "^19.0.8",
+    "@types/react-dom": "^19.0.3",
+    "eslint": "^9.19.0",
+    "eslint-config-next": "^15.2.0",
+    "postcss": "^8.5.3",
+    "tailwindcss": "^4.0.15",
+    "tsx": "^4.19.3",
+    "typescript": "^5.7.3"
+  }
+}
